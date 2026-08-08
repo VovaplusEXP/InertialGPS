@@ -5,14 +5,14 @@ import kotlin.math.sqrt
 class StepDetector {
     
     // Config
-    private val MIN_STEP_DELAY_MS = 250L
+    private val MIN_STEP_DELAY_MS = 350L
     private val MAX_STEP_DELAY_MS = 2000L
-    private val PEAK_THRESHOLD = 0.6f // m/s^2 above gravity (lowered for soft walking)
-    private val VALLEY_THRESHOLD = -0.4f // m/s^2 below gravity
+    private val PEAK_THRESHOLD = 1.1f // m/s^2 above gravity (middle ground)
+    private val VALLEY_THRESHOLD = -0.6f // m/s^2 below gravity
     private val GYRO_VARIANCE_THRESHOLD = 15.0f // reject if gyro variance is too high (swinging)
     
     private val GRAVITY = 9.81f
-    private val WEINBERG_K = 0.42f // Tunable constant for step length (lowered to reduce false positive length)
+    private val WEINBERG_K = 0.45f // Tunable constant for step length
     
     // State
     private var lastPeakTime = 0L
@@ -29,44 +29,50 @@ class StepDetector {
     var stepLength = 0f
         private set
 
-    fun process(ax: Float, ay: Float, az: Float, gx: Float, gy: Float, gz: Float, timestampMs: Long): Boolean {
-        // 1. Calculate Acceleration Magnitude (remove nominal gravity)
-        val accelMag = sqrt(ax * ax + ay * ay + az * az) - GRAVITY
+    fun process(aWorld: DoubleArray, gx: Float, gy: Float, gz: Float, timestampMs: Long): Boolean {
+        // 1. Vertical Acceleration (Z-axis in World Frame)
+        // aWorld is already minus gravity, so resting Z is 0.
+        val az = aWorld[2].toFloat()
         
-        // 2. Track Gyroscope Magnitude for variance (swinging bag rejection)
+        // 2. Horizontal Acceleration (X, Y in World Frame)
+        val ax = aWorld[0].toFloat()
+        val ay = aWorld[1].toFloat()
+        val horizontalMag = sqrt(ax * ax + ay * ay)
+        
+        // 3. Track Gyroscope Magnitude for variance (swinging bag rejection)
         val gyroMag = sqrt(gx * gx + gy * gy + gz * gz)
         gyroBuffer[gyroIndex] = gyroMag
         gyroIndex = (gyroIndex + 1) % gyroBuffer.size
         if (gyroCount < gyroBuffer.size) gyroCount++
 
-        // 3. Peak/Valley Detection
+        // 4. Peak/Valley Detection on Vertical Axis
         var stepDetected = false
 
         if (!isLookingForValley) {
             // Looking for a peak
-            if (accelMag > PEAK_THRESHOLD) {
-                if (accelMag > lastPeakValue) {
-                    lastPeakValue = accelMag
+            if (az > PEAK_THRESHOLD) {
+                if (az > lastPeakValue) {
+                    lastPeakValue = az
                 }
-            } else if (lastPeakValue > PEAK_THRESHOLD && accelMag < 0) {
+            } else if (lastPeakValue > PEAK_THRESHOLD && az < 0) {
                 // Crossed zero after a peak, start looking for valley
                 isLookingForValley = true
                 currentValleyValue = 0f
             }
         } else {
             // Looking for a valley
-            if (accelMag < VALLEY_THRESHOLD) {
-                if (accelMag < currentValleyValue) {
-                    currentValleyValue = accelMag
+            if (az < VALLEY_THRESHOLD) {
+                if (az < currentValleyValue) {
+                    currentValleyValue = az
                 }
-            } else if (currentValleyValue < VALLEY_THRESHOLD && accelMag > 0) {
+            } else if (currentValleyValue < VALLEY_THRESHOLD && az > 0) {
                 // Crossed zero after a valley, step complete
                 
                 val dt = timestampMs - lastPeakTime
                 if (dt in MIN_STEP_DELAY_MS..MAX_STEP_DELAY_MS) {
-                    // Check Gyro Variance to ensure it's not a wild swing
+                    // Check Gyro Variance and Horizontal Movement to ensure it's a real step
                     val gyroVar = calculateGyroVariance()
-                    if (gyroVar < GYRO_VARIANCE_THRESHOLD) {
+                    if (gyroVar < GYRO_VARIANCE_THRESHOLD && horizontalMag > 0.3f) {
                         // VALID STEP!
                         stepLength = WEINBERG_K * sqrt(sqrt(lastPeakValue - currentValleyValue))
                         // Constrain step length to realistic values (0.4m to 1.2m)

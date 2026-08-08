@@ -77,10 +77,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         
-        // Use True Rotation Vector for absolute attitude (aligns with North)
-        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        // Use Game Rotation Vector (immune to indoor magnetic tilt interference)
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
         if (rotationVectorSensor == null) {
-            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         }
 
         createNotificationChannel()
@@ -273,7 +273,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             try {
                 eskf.predict(event.values, currentGyro, dt)
                 
-                val isStep = stepDetector.process(event.values[0], event.values[1], event.values[2], currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
+                val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
                 
                 if (isStep) {
                     stepsTaken++
@@ -318,7 +318,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         val az = event.values[2]
                         val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
                         
-                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.1f) {
+                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.3f) {
                             eskf.updateZUPT(0.5)
                         }
                     }
@@ -331,7 +331,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         val v = eskf.velocity
                         val p = eskf.position
                         val b = eskf.accelBias
-                        val zupt = if (currentTime - timeSinceLastStep > 2000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.1f) "ZUPT Active" else "Moving"
+                        val zupt = if (currentTime - timeSinceLastStep > 2000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.3f) "ZUPT Active" else "Moving"
                         val sysLog = String.format("Pos: %.2f, %.2f, %.2f\nVel: %.2f, %.2f, %.2f\nBias: %.3f, %.3f, %.3f\nState: %s", 
                             p.get(0,0), p.get(1,0), p.get(2,0),
                             v.get(0,0), v.get(1,0), v.get(2,0),

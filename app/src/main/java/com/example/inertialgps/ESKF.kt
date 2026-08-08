@@ -28,6 +28,9 @@ class ESKF {
         for (i in 12..14) Q.set(i, i, 1e-5) // Gyro bias random walk
     }
 
+    var linearAccelWorld = doubleArrayOf(0.0, 0.0, 0.0)
+        private set
+        
     fun predict(accelRaw: FloatArray, gyroRaw: FloatArray, dt: Double) {
         if (dt <= 0) return
         
@@ -49,6 +52,10 @@ class ESKF {
         
         // 1. Update nominal state
         val aWorld = R.mult(a).minus(gravity)
+        linearAccelWorld[0] = aWorld.get(0,0)
+        linearAccelWorld[1] = aWorld.get(1,0)
+        linearAccelWorld[2] = aWorld.get(2,0)
+        
         position = position.plus(velocity.scale(dt)).plus(aWorld.scale(0.5 * dt * dt))
         velocity = velocity.plus(aWorld.scale(dt))
         quaternion = updateQuaternion(quaternion, w, dt)
