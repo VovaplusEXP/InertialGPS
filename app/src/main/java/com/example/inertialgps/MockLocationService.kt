@@ -258,16 +258,29 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
     }
 
+    private var lastLocationUpdate: Long = 0
+
     private fun updateMockLocation() {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - lastLocationUpdate < 500) {
+            return // Update map only twice per second to prevent overloading OS
+        }
+        lastLocationUpdate = currentTime
+
         val latOffset = positionOffset[1] / 111111.0
         val newLat = initialLat + latOffset
         val lonOffset = positionOffset[0] / (111111.0 * cos(initialLat * PI / 180.0))
         val newLon = initialLon + lonOffset
 
+        val currentSpeed = kotlin.math.sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1])
+        val currentBearing = ((kotlin.math.atan2(velocity[0], velocity[1]) * 180 / PI + 360) % 360).toFloat()
+
         val baseLocation = Location(LocationManager.GPS_PROVIDER).apply {
             latitude = newLat
             longitude = newLon
             altitude = 0.0
+            speed = currentSpeed
+            bearing = currentBearing
             time = System.currentTimeMillis()
             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
             accuracy = 5.0f
@@ -286,7 +299,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                 mockLocation.provider = provider
                 locationManager.setTestProviderLocation(provider, mockLocation)
             } catch (e: Exception) {
-                // Ignore silent failures for fused/network if unsupported
+                // Ignore
             }
         }
     }
