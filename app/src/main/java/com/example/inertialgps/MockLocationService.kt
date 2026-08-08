@@ -258,15 +258,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
     }
 
-    private var lastLocationUpdate: Long = 0
-
     private fun updateMockLocation() {
-        val currentTime = System.currentTimeMillis()
-        if (currentTime - lastLocationUpdate < 500) {
-            return // Update map only twice per second to prevent overloading OS
-        }
-        lastLocationUpdate = currentTime
-
         val latOffset = positionOffset[1] / 111111.0
         val newLat = initialLat + latOffset
         val lonOffset = positionOffset[0] / (111111.0 * cos(initialLat * PI / 180.0))
