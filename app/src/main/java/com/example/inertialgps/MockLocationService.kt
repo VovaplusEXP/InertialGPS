@@ -77,10 +77,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         
-        // Use Game Rotation Vector for absolute attitude (no compass interference)
-        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        // Use True Rotation Vector for absolute attitude (aligns with North)
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (rotationVectorSensor == null) {
-            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
         }
 
         createNotificationChannel()
@@ -336,14 +336,14 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     })
                     
                 } else {
-                    if (currentTime - timeSinceLastStep > 1000) {
+                    if (currentTime - timeSinceLastStep > 2000) {
                         val ax = event.values[0]
                         val ay = event.values[1]
                         val az = event.values[2]
                         val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
                         
-                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.2f) {
-                            eskf.updateZUPT(0.001)
+                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.1f) {
+                            eskf.updateZUPT(0.5)
                         }
                     }
                 }
@@ -355,7 +355,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         val v = eskf.velocity
                         val p = eskf.position
                         val b = eskf.accelBias
-                        val zupt = if (currentTime - timeSinceLastStep > 1000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.2f) "ZUPT Active" else "Moving"
+                        val zupt = if (currentTime - timeSinceLastStep > 2000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.1f) "ZUPT Active" else "Moving"
                         val sysLog = String.format("Pos: %.2f, %.2f, %.2f\nVel: %.2f, %.2f, %.2f\nBias: %.3f, %.3f, %.3f\nState: %s", 
                             p.get(0,0), p.get(1,0), p.get(2,0),
                             v.get(0,0), v.get(1,0), v.get(2,0),
