@@ -185,14 +185,21 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     private fun setupMockProvider() {
         try {
+            // Android might keep the test provider if the app crashed previously
+            try {
+                locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
+            } catch (e: Exception) {}
+
             locationManager.addTestProvider(
                 LocationManager.GPS_PROVIDER, false, false, false, false,
                 true, true, true, 0, 1
             )
             locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
-        } catch (e: Exception) {
-            Log.e("MockLocationService", "Error setting up mock provider", e)
+        } catch (e: SecurityException) {
+            Log.e("MockLocationService", "SecurityException: Mock provider permission denied", e)
             sendBroadcast(Intent("com.example.inertialgps.MOCK_DENIED").apply { setPackage(packageName) })
+        } catch (e: IllegalArgumentException) {
+            Log.e("MockLocationService", "IllegalArgumentException setting up mock provider", e)
         }
     }
 
