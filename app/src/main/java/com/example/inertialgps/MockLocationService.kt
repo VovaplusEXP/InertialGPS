@@ -163,10 +163,15 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         isInertialMode = false
         
         sensorManager.unregisterListener(this)
-        for (provider in MOCK_PROVIDERS) {
+        
+        // Force cleanup of all possible providers (in case they were orphaned by previous app builds)
+        val allPossibleProviders = arrayOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused")
+        for (provider in allPossibleProviders) {
             try {
                 locationManager.removeTestProvider(provider)
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                Log.e("MockLocationService", "Cleanup: Provider $provider not removed", e)
+            }
         }
     }
 
