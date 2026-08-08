@@ -118,35 +118,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     }
     
     private fun startCalibration() {
-        if (isCalibrating) return
-        isCalibrating = true
-        calibSumX = 0f
-        calibSumY = 0f
-        calibSumZ = 0f
-        calibCount = 0
-        
-        Handler(Looper.getMainLooper()).postDelayed({
-            isCalibrating = false
-            if (calibCount > 0) {
-                biasX = calibSumX / calibCount
-                biasY = calibSumY / calibCount
-                biasZ = calibSumZ / calibCount
-                
-                prefs.edit()
-                    .putFloat("biasX", biasX)
-                    .putFloat("biasY", biasY)
-                    .putFloat("biasZ", biasZ)
-                    .apply()
-                    
-                val doneIntent = Intent("com.example.inertialgps.CALIBRATION_DONE").apply {
-                    setPackage(packageName)
-                    putExtra("biasX", biasX)
-                    putExtra("biasY", biasY)
-                    putExtra("biasZ", biasZ)
-                }
-                sendBroadcast(doneIntent)
-            }
-        }, 5000)
+        // Obsolete: Dynamic ESKF ZUPT handles this better.
+        val doneIntent = Intent("com.example.inertialgps.CALIBRATION_DONE").apply {
+            setPackage(packageName)
+        }
+        sendBroadcast(doneIntent)
     }
 
     private fun enableInertialMode() {
@@ -282,14 +258,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             currentGyro[2] = event.values[2]
         } else if (type == Sensor.TYPE_ACCELEROMETER_UNCALIBRATED || type == Sensor.TYPE_ACCELEROMETER) {
             
-            if (isCalibrating) {
-                calibSumX += event.values[0]
-                calibSumY += event.values[1]
-                calibSumZ += event.values[2]
-                calibCount++
-                return
-            }
-            
             if (!gotInitialLocation || !isInertialMode || !isEskfInitialized) return
             
             if (lastTime == 0L) {
@@ -311,9 +279,17 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     stepsTaken++
                     timeSinceLastStep = currentTime
                     
-                    // Top of the phone (Y-axis) points forward.
-                    // Y-axis World North = R[4], World East = R[1]
-                    val heading = kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
+                    // Path B: True Physical Heading via ESKF Velocity
+                    val vx = eskf.velocity.get(0, 0)
+                    val vy = eskf.velocity.get(1, 0)
+                    
+                    // Fallback to compass if velocity is too small to determine direction
+                    val heading = if (kotlin.math.abs(vx) > 0.1 || kotlin.math.abs(vy) > 0.1) {
+                        kotlin.math.atan2(vy, vx)
+                    } else {
+                        kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
+                    }
+
                     val stepLength = stepDetector.stepLength
                     val dx = stepLength * kotlin.math.cos(heading)
                     val dy = stepLength * kotlin.math.sin(heading)

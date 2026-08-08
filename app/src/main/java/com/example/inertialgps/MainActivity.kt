@@ -42,13 +42,9 @@ class MainActivity : AppCompatActivity() {
                     tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lastLat, lastLon)
                 }
                 "com.example.inertialgps.CALIBRATION_DONE" -> {
-                    val bx = intent.getFloatExtra("biasX", 0f)
-                    val by = intent.getFloatExtra("biasY", 0f)
-                    val bz = intent.getFloatExtra("biasZ", 0f)
-                    tvCalibration.text = String.format("Bias: X:%.3f Y:%.3f Z:%.3f", bx, by, bz)
-                    btnCalibrate.isEnabled = true
-                    btnCalibrate.text = "Calibrate Sensors (5s)"
-                    Toast.makeText(this@MainActivity, "Calibration Complete!", Toast.LENGTH_SHORT).show()
+                    tvCalibration.text = "Bias is automatically calculated by ESKF ZUPT."
+                    btnCalibrate.isEnabled = false
+                    btnCalibrate.text = "Auto-Calibrated"
                 }
                 "com.example.inertialgps.GPS_WAITING" -> {
                     tvLocation.text = "Waiting for Real GPS fix..."

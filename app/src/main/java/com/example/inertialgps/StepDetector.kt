@@ -5,14 +5,14 @@ import kotlin.math.sqrt
 class StepDetector {
     
     // Config
-    private val MIN_STEP_DELAY_MS = 300L
-    private val MAX_STEP_DELAY_MS = 1500L
-    private val PEAK_THRESHOLD = 1.5f // m/s^2 above gravity
-    private val VALLEY_THRESHOLD = -1.0f // m/s^2 below gravity
+    private val MIN_STEP_DELAY_MS = 250L
+    private val MAX_STEP_DELAY_MS = 2000L
+    private val PEAK_THRESHOLD = 0.6f // m/s^2 above gravity (lowered for soft walking)
+    private val VALLEY_THRESHOLD = -0.4f // m/s^2 below gravity
     private val GYRO_VARIANCE_THRESHOLD = 15.0f // reject if gyro variance is too high (swinging)
     
     private val GRAVITY = 9.81f
-    private val WEINBERG_K = 0.5f // Tunable constant for step length
+    private val WEINBERG_K = 0.42f // Tunable constant for step length (lowered to reduce false positive length)
     
     // State
     private var lastPeakTime = 0L
