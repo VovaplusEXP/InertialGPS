@@ -153,13 +153,19 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         gotInitialLocation = false
 
         try {
-            val lastLoc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            
-            if (lastLoc != null) {
-                setInitialLocation(lastLoc)
+            sendBroadcast(Intent("com.example.inertialgps.GPS_WAITING"))
+            // Force a fresh, high-accuracy GPS update
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                locationManager.getCurrentLocation(
+                    LocationManager.GPS_PROVIDER,
+                    null,
+                    ContextCompat.getMainExecutor(this),
+                    { location ->
+                        if (location != null) setInitialLocation(location)
+                        else locationManager.requestSingleUpdate(LocationManager.GPS_PROVIDER, this, null)
+                    }
+                )
             } else {
-                sendBroadcast(Intent("com.example.inertialgps.GPS_WAITING"))
                 locationManager.requestSingleUpdate(LocationManager.GPS_PROVIDER, this, null)
             }
         } catch (e: SecurityException) {
@@ -171,7 +177,9 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         if (!isInertialMode) return
         isInertialMode = false
         
-        sensorManager.unregisterListener(this)
+        // Disable sensors when not walking to save battery
+        sensorManager.unregisterListener(this, rawAccelSensor)
+        sensorManager.unregisterListener(this, linearAccelerationSensor)
         
         // Force cleanup of all possible providers (in case they were orphaned by previous app builds)
         val allPossibleProviders = arrayOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused")
@@ -193,12 +201,21 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         velocity.fill(0f)
         positionOffset.fill(0f)
         
+        // Hard Reset ESKF
+        eskf.position.fill(0.0)
+        eskf.velocity.fill(0.0)
+        isEskfInitialized = false
+        
         gotInitialLocation = true
         lastTime = System.currentTimeMillis()
         setupMockProvider()
     }
 
-    private val MOCK_PROVIDERS = arrayOf(LocationManager.GPS_PROVIDER)
+    private val MOCK_PROVIDERS = arrayOf(
+        LocationManager.GPS_PROVIDER,
+        LocationManager.NETWORK_PROVIDER,
+        "fused"
+    )
 
     private fun setupMockProvider() {
         for (provider in MOCK_PROVIDERS) {
