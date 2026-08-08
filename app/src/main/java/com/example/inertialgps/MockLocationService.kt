@@ -67,6 +67,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("isServiceRunning", true).apply()
         
         biasX = prefs.getFloat("biasX", 0f)
         biasY = prefs.getFloat("biasY", 0f)
@@ -151,6 +152,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private fun enableInertialMode() {
         if (isInertialMode) return
         isInertialMode = true
+        prefs.edit().putBoolean("isInertialEnabled", true).apply()
         gotInitialLocation = false
 
         try {
@@ -177,6 +179,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private fun disableInertialMode() {
         if (!isInertialMode) return
         isInertialMode = false
+        prefs.edit().putBoolean("isInertialEnabled", false).apply()
         
         // Disable sensors when not walking to save battery
         sensorManager.unregisterListener(this, rawAccelSensor)
@@ -206,6 +209,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         eskf.position.fill(0.0)
         eskf.velocity.fill(0.0)
         isEskfInitialized = false
+        pdrX = 0.0
+        pdrY = 0.0
         
         gotInitialLocation = true
         lastTime = System.currentTimeMillis()
@@ -241,6 +246,9 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             }
         }
     }
+
+    private var pdrX = 0.0
+    private var pdrY = 0.0
 
     private var currentGyro = FloatArray(3)
     private var stepsTaken = 0
@@ -284,8 +292,14 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             
             if (!gotInitialLocation || !isInertialMode || !isEskfInitialized) return
             
-            val dt = (currentTime - lastTime) / 1000.0
-            lastTime = currentTime
+            if (lastTime == 0L) {
+                lastTime = event.timestamp
+                return
+            }
+            
+            val dt = (event.timestamp - lastTime) / 1_000_000_000.0
+            lastTime = event.timestamp
+            
             if (dt > 0.5 || dt <= 0.0) return
             
             try {
@@ -297,16 +311,20 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     stepsTaken++
                     timeSinceLastStep = currentTime
                     
-                    val heading = kotlin.math.atan2(rotationMatrix[3].toDouble(), rotationMatrix[0].toDouble())
+                    // Top of the phone (Y-axis) points forward.
+                    // Y-axis World North = R[4], World East = R[1]
+                    val heading = kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
                     val stepLength = stepDetector.stepLength
                     val dx = stepLength * kotlin.math.cos(heading)
                     val dy = stepLength * kotlin.math.sin(heading)
                     
-                    val currentPos = eskf.position
+                    pdrX += dx
+                    pdrY += dy
+                    
                     val measuredPos = doubleArrayOf(
-                        currentPos.get(0, 0) + dx,
-                        currentPos.get(1, 0) + dy,
-                        currentPos.get(2, 0)
+                        pdrX,
+                        pdrY,
+                        eskf.position.get(2, 0) // Assume z doesn't change much for PDR
                     )
                     
                     eskf.updatePosition(measuredPos, 0.01)
@@ -392,6 +410,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        prefs.edit().putBoolean("isServiceRunning", false).putBoolean("isInertialEnabled", false).apply()
         sensorManager.unregisterListener(this)
         disableInertialMode()
     }

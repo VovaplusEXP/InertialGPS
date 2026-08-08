@@ -82,12 +82,18 @@ class MainActivity : AppCompatActivity() {
             defaultHandler?.uncaughtException(thread, throwable)
         }
 
+        val prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
+        isServiceRunning = prefs.getBoolean("isServiceRunning", false)
+        isInertialEnabled = prefs.getBoolean("isInertialEnabled", false)
+
         val bx = prefs.getFloat("biasX", 0f)
         val by = prefs.getFloat("biasY", 0f)
         val bz = prefs.getFloat("biasZ", 0f)
         if (bx != 0f || by != 0f || bz != 0f) {
             tvCalibration.text = String.format("Bias: X:%.3f Y:%.3f Z:%.3f", bx, by, bz)
         }
+        
+        updateUIState()
 
         btnToggle.setOnClickListener {
             if (isServiceRunning) {
@@ -102,14 +108,11 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this, MockLocationService::class.java)
             if (isInertialEnabled) {
                 intent.action = "ENABLE_INERTIAL"
-                btnToggleInertial.text = "Disable Inertial Mode"
-                tvStatus.text = "Status: Service Running (Inertial ON)"
             } else {
                 intent.action = "DISABLE_INERTIAL"
-                btnToggleInertial.text = "Enable Inertial Mode"
-                tvStatus.text = "Status: Service Running (Inertial OFF)"
             }
             startService(intent)
+            updateUIState()
         }
         
         btnCalibrate.setOnClickListener {
@@ -164,6 +167,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateUIState() {
+        if (isServiceRunning) {
+            btnToggle.text = "Stop Service"
+            btnToggleInertial.isEnabled = true
+            btnCalibrate.isEnabled = true
+            if (isInertialEnabled) {
+                btnToggleInertial.text = "Disable Inertial Mode"
+                tvStatus.text = "Status: Service Running (Inertial ON)"
+            } else {
+                btnToggleInertial.text = "Enable Inertial Mode"
+                tvStatus.text = "Status: Service Running (Inertial OFF)"
+            }
+        } else {
+            btnToggle.text = "Start Service"
+            btnToggleInertial.isEnabled = false
+            btnToggleInertial.text = "Enable Inertial Mode"
+            btnCalibrate.isEnabled = false
+            tvStatus.text = "Status: Stopped"
+        }
+    }
+
     private fun startMockService() {
         val intent = Intent(this, MockLocationService::class.java)
         intent.action = "START_SERVICE"
@@ -173,10 +197,7 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
         }
         isServiceRunning = true
-        btnToggle.text = "Stop Service"
-        btnToggleInertial.isEnabled = true
-        btnCalibrate.isEnabled = true
-        tvStatus.text = "Status: Service Running (Inertial OFF)"
+        updateUIState()
     }
 
     private fun stopMockService() {
@@ -184,10 +205,6 @@ class MainActivity : AppCompatActivity() {
         stopService(intent)
         isServiceRunning = false
         isInertialEnabled = false
-        btnToggle.text = "Start Service"
-        btnToggleInertial.isEnabled = false
-        btnToggleInertial.text = "Enable Inertial Mode"
-        btnCalibrate.isEnabled = false
-        tvStatus.text = "Status: Stopped"
+        updateUIState()
     }
 }
