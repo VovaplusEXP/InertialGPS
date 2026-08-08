@@ -227,6 +227,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var currentGyro = FloatArray(3)
     private var stepsTaken = 0
     private var timeSinceLastStep = 0L
+    private var lastMockUpdateTime = 0L
     
     private val eskf = ESKF()
     private var isEskfInitialized = false
@@ -241,7 +242,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             
             if (!isEskfInitialized) {
                 val q = FloatArray(4)
-                SensorManager.getQuaternionFromVector(q, event.values) // q = [w, x, y, z]
+                SensorManager.getQuaternionFromVector(q, event.values)
                 eskf.quaternion.set(0, 0, q[0].toDouble())
                 eskf.quaternion.set(1, 0, q[1].toDouble())
                 eskf.quaternion.set(2, 0, q[2].toDouble())
@@ -269,52 +270,58 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             lastTime = currentTime
             if (dt > 0.5 || dt <= 0.0) return
             
-            // 1. ESKF Predict Step (100Hz)
-            eskf.predict(event.values, currentGyro, dt)
-            
-            // 2. Heuristic PDR
-            val isStep = stepDetector.process(event.values[0], event.values[1], event.values[2], currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
-            
-            if (isStep) {
-                stepsTaken++
-                timeSinceLastStep = currentTime
+            try {
+                eskf.predict(event.values, currentGyro, dt)
                 
-                val heading = kotlin.math.atan2(rotationMatrix[3].toDouble(), rotationMatrix[0].toDouble())
-                val stepLength = stepDetector.stepLength
-                val dx = stepLength * kotlin.math.cos(heading)
-                val dy = stepLength * kotlin.math.sin(heading) // Y is North
+                val isStep = stepDetector.process(event.values[0], event.values[1], event.values[2], currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
                 
-                // We provide ESKF with the *new* expected position based on PDR
-                val currentPos = eskf.position
-                val measuredPos = doubleArrayOf(
-                    currentPos.get(0, 0) + dx,
-                    currentPos.get(1, 0) + dy,
-                    currentPos.get(2, 0) // Assume z doesn't change much for PDR
-                )
-                
-                // 3. ESKF Update (Measurement)
-                eskf.updatePosition(measuredPos, 0.01) // 0.01 variance (high confidence in PDR)
-                
-            } else {
-                // 4. Pseudo-ZUPT
-                if (currentTime - timeSinceLastStep > 1000) {
-                    val ax = event.values[0]
-                    val ay = event.values[1]
-                    val az = event.values[2]
-                    val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
+                if (isStep) {
+                    stepsTaken++
+                    timeSinceLastStep = currentTime
                     
-                    // If device is very stationary (near 1g)
-                    if (kotlin.math.abs(accelVariance - 9.81f) < 0.2f) {
-                        eskf.updateZUPT(0.001) // 0.001 variance (very high confidence we are stopped)
+                    val heading = kotlin.math.atan2(rotationMatrix[3].toDouble(), rotationMatrix[0].toDouble())
+                    val stepLength = stepDetector.stepLength
+                    val dx = stepLength * kotlin.math.cos(heading)
+                    val dy = stepLength * kotlin.math.sin(heading)
+                    
+                    val currentPos = eskf.position
+                    val measuredPos = doubleArrayOf(
+                        currentPos.get(0, 0) + dx,
+                        currentPos.get(1, 0) + dy,
+                        currentPos.get(2, 0)
+                    )
+                    
+                    eskf.updatePosition(measuredPos, 0.01)
+                    
+                } else {
+                    if (currentTime - timeSinceLastStep > 1000) {
+                        val ax = event.values[0]
+                        val ay = event.values[1]
+                        val az = event.values[2]
+                        val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
+                        
+                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.2f) {
+                            eskf.updateZUPT(0.001)
+                        }
                     }
                 }
+                
+                // Throttle UI and Mock Location updates to prevent Broadcast flooding (1 Hz or on Step)
+                if (currentTime - lastMockUpdateTime > 1000 || isStep) {
+                    lastMockUpdateTime = currentTime
+                    
+                    positionOffset[0] = eskf.position.get(0, 0).toFloat()
+                    positionOffset[1] = eskf.position.get(1, 0).toFloat()
+                    
+                    updateMockLocation()
+                }
+                
+            } catch (e: Exception) {
+                // Catch matrix math errors and broadcast to UI
+                val errorIntent = Intent("com.example.inertialgps.MOCK_DENIED")
+                errorIntent.setPackage(packageName)
+                sendBroadcast(errorIntent)
             }
-            
-            // Sync ESKF state to map offset
-            positionOffset[0] = eskf.position.get(0, 0).toFloat()
-            positionOffset[1] = eskf.position.get(1, 0).toFloat()
-            
-            updateMockLocation()
         }
     }
 
