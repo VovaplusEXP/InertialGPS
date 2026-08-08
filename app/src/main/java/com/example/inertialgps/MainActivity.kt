@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -23,17 +24,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnToggle: Button
     private lateinit var btnToggleInertial: Button
     private lateinit var btnCalibrate: Button
+    private lateinit var btnShowMap: Button
 
     private var isServiceRunning = false
     private var isInertialEnabled = false
+    private var lastLat = 0.0
+    private var lastLon = 0.0
 
     private val locationUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 "com.example.inertialgps.LOCATION_UPDATE" -> {
-                    val lat = intent.getDoubleExtra("lat", 0.0)
-                    val lon = intent.getDoubleExtra("lon", 0.0)
-                    tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lat, lon)
+                    lastLat = intent.getDoubleExtra("lat", 0.0)
+                    lastLon = intent.getDoubleExtra("lon", 0.0)
+                    tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lastLat, lastLon)
                 }
                 "com.example.inertialgps.CALIBRATION_DONE" -> {
                     val bx = intent.getFloatExtra("biasX", 0f)
@@ -65,6 +69,23 @@ class MainActivity : AppCompatActivity() {
         btnToggle = findViewById(R.id.btnToggle)
         btnToggleInertial = findViewById(R.id.btnToggleInertial)
         btnCalibrate = findViewById(R.id.btnCalibrate)
+        btnShowMap = findViewById(R.id.btnShowMap)
+        
+        btnShowMap.setOnClickListener {
+            if (lastLat != 0.0 && lastLon != 0.0) {
+                val uri = Uri.parse("geo:$lastLat,$lastLon?q=$lastLat,$lastLon(InertialGPS Mock)")
+                val mapIntent = Intent(Intent.ACTION_VIEW, uri)
+                mapIntent.setPackage("com.google.android.apps.maps")
+                if (mapIntent.resolveActivity(packageManager) != null) {
+                    startActivity(mapIntent)
+                } else {
+                    val genericIntent = Intent(Intent.ACTION_VIEW, uri)
+                    startActivity(genericIntent)
+                }
+            } else {
+                Toast.makeText(this, "No location yet", Toast.LENGTH_SHORT).show()
+            }
+        }
 
         val prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
         

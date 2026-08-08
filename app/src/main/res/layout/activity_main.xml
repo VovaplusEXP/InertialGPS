@@ -54,8 +54,15 @@
         android:id="@+id/btnCalibrate"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
         android:enabled="false"
         android:text="Calibrate Sensors (5s)" />
+        
+    <Button
+        android:id="@+id/btnShowMap"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Show Mock on Map" />
 
     </LinearLayout>
 </ScrollView>
