@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -15,7 +16,9 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -26,6 +29,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     private lateinit var locationManager: LocationManager
     private lateinit var sensorManager: SensorManager
+    private lateinit var prefs: SharedPreferences
 
     private var linearAccelerationSensor: Sensor? = null
     private var rotationVectorSensor: Sensor? = null
@@ -35,12 +39,22 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var gotInitialLocation = false
 
     private var lastTime: Long = 0
-    private var velocity = FloatArray(3) // x, y, z in Earth frame (East, North, Up)
-    private var positionOffset = FloatArray(3) // x, y, z in Earth frame (East, North, Up)
+    private var velocity = FloatArray(3) // x, y, z in Earth frame
+    private var positionOffset = FloatArray(3) // x, y, z in Earth frame
 
     private val rotationMatrix = FloatArray(9)
     private var hasRotation = false
     private var isInertialMode = false
+    
+    // Calibration
+    private var isCalibrating = false
+    private var biasX = 0f
+    private var biasY = 0f
+    private var biasZ = 0f
+    private var calibSumX = 0f
+    private var calibSumY = 0f
+    private var calibSumZ = 0f
+    private var calibCount = 0
     
     private val CHANNEL_ID = "MockLocationServiceChannel"
 
@@ -48,6 +62,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         super.onCreate()
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
+        
+        biasX = prefs.getFloat("biasX", 0f)
+        biasY = prefs.getFloat("biasY", 0f)
+        biasZ = prefs.getFloat("biasZ", 0f)
 
         linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -65,8 +84,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
         when (intent?.action) {
             "START_SERVICE" -> {
-                // Just start, don't hijack GPS yet. Wait for enable inertial mode.
                 isInertialMode = false
+                // Register sensors immediately if we want to allow calibration without enabling inertial mode
+                sensorManager.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_GAME)
+                sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME)
             }
             "ENABLE_INERTIAL" -> {
                 enableInertialMode()
@@ -74,9 +95,43 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             "DISABLE_INERTIAL" -> {
                 disableInertialMode()
             }
+            "START_CALIBRATION" -> {
+                startCalibration()
+            }
         }
 
         return START_STICKY
+    }
+    
+    private fun startCalibration() {
+        if (isCalibrating) return
+        isCalibrating = true
+        calibSumX = 0f
+        calibSumY = 0f
+        calibSumZ = 0f
+        calibCount = 0
+        
+        Handler(Looper.getMainLooper()).postDelayed({
+            isCalibrating = false
+            if (calibCount > 0) {
+                biasX = calibSumX / calibCount
+                biasY = calibSumY / calibCount
+                biasZ = calibSumZ / calibCount
+                
+                prefs.edit()
+                    .putFloat("biasX", biasX)
+                    .putFloat("biasY", biasY)
+                    .putFloat("biasZ", biasZ)
+                    .apply()
+                    
+                val doneIntent = Intent("com.example.inertialgps.CALIBRATION_DONE").apply {
+                    putExtra("biasX", biasX)
+                    putExtra("biasY", biasY)
+                    putExtra("biasZ", biasZ)
+                }
+                sendBroadcast(doneIntent)
+            }
+        }, 5000)
     }
 
     private fun enableInertialMode() {
@@ -84,13 +139,14 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         isInertialMode = true
         gotInitialLocation = false
 
-        // Request initial location to start tracking
         try {
             val lastLoc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            
             if (lastLoc != null) {
                 setInitialLocation(lastLoc)
             } else {
+                sendBroadcast(Intent("com.example.inertialgps.GPS_WAITING"))
                 locationManager.requestSingleUpdate(LocationManager.GPS_PROVIDER, this, null)
             }
         } catch (e: SecurityException) {
@@ -102,7 +158,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         if (!isInertialMode) return
         isInertialMode = false
         
-        sensorManager.unregisterListener(this)
         try {
             locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
         } catch (e: Exception) {
@@ -116,14 +171,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         initialLat = location.latitude
         initialLon = location.longitude
         
-        // Reset state
         velocity.fill(0f)
         positionOffset.fill(0f)
         
         gotInitialLocation = true
-
+        lastTime = System.currentTimeMillis()
         setupMockProvider()
-        startSensors()
     }
 
     private fun setupMockProvider() {
@@ -138,26 +191,34 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
     }
 
-    private fun startSensors() {
-        lastTime = System.currentTimeMillis()
-        sensorManager.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_GAME)
-        sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME)
-    }
-
     override fun onSensorChanged(event: SensorEvent) {
-        if (!gotInitialLocation || !isInertialMode) return
-
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
             hasRotation = true
-        } else if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION && hasRotation) {
-            val currentTime = System.currentTimeMillis()
-            val dt = (currentTime - lastTime) / 1000f // seconds
-            lastTime = currentTime
+        } else if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
+            val axRaw = event.values[0]
+            val ayRaw = event.values[1]
+            val azRaw = event.values[2]
+            
+            if (isCalibrating) {
+                calibSumX += axRaw
+                calibSumY += ayRaw
+                calibSumZ += azRaw
+                calibCount++
+            }
+            
+            if (!gotInitialLocation || !isInertialMode || !hasRotation) return
 
-            val ax = event.values[0]
-            val ay = event.values[1]
-            val az = event.values[2]
+            val ax = axRaw - biasX
+            val ay = ayRaw - biasY
+            val az = azRaw - biasZ
+
+            val currentTime = System.currentTimeMillis()
+            val dt = (currentTime - lastTime) / 1000f
+            lastTime = currentTime
+            
+            // Limit dt to avoid huge jumps if sensor stalls
+            if (dt > 0.5f) return
 
             val earthAx = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
             val earthAy = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az
@@ -167,7 +228,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             velocity[1] += earthAy * dt
             velocity[2] += earthAz * dt
 
-            val dampening = 0.95f
+            val dampening = 0.98f // Reduced dampening slightly since we have calibration
             velocity[0] *= dampening
             velocity[1] *= dampening
             velocity[2] *= dampening
@@ -197,7 +258,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         try {
             locationManager.setTestProviderLocation(LocationManager.GPS_PROVIDER, mockLocation)
             
-            val intent = Intent("LOCATION_UPDATE").apply {
+            val intent = Intent("com.example.inertialgps.LOCATION_UPDATE").apply {
                 putExtra("lat", newLat)
                 putExtra("lon", newLon)
             }
@@ -218,6 +279,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        sensorManager.unregisterListener(this)
         disableInertialMode()
     }
 

@@ -20,6 +20,14 @@
         android:layout_height="wrap_content"
         android:text="Lat: -, Lon: -"
         android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+        
+    <TextView
+        android:id="@+id/tvCalibration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Bias: not calibrated"
+        android:textSize="14sp"
         android:layout_marginBottom="32dp" />
 
     <Button
@@ -33,7 +41,15 @@
         android:id="@+id/btnToggleInertial"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
         android:enabled="false"
         android:text="Enable Inertial Mode" />
+        
+    <Button
+        android:id="@+id/btnCalibrate"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:enabled="false"
+        android:text="Calibrate Sensors (5s)" />
 
 </LinearLayout>
