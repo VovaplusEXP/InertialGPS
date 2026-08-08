@@ -67,6 +67,21 @@ class MainActivity : AppCompatActivity() {
         btnCalibrate = findViewById(R.id.btnCalibrate)
 
         val prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
+        
+        val crashLog = prefs.getString("crash_log", null)
+        if (crashLog != null) {
+            tvStatus.text = "CRASH: $crashLog"
+            prefs.edit().remove("crash_log").commit()
+        }
+
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val sw = java.io.StringWriter()
+            throwable.printStackTrace(java.io.PrintWriter(sw))
+            prefs.edit().putString("crash_log", sw.toString()).commit()
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         val bx = prefs.getFloat("biasX", 0f)
         val by = prefs.getFloat("biasY", 0f)
         val bz = prefs.getFloat("biasZ", 0f)
