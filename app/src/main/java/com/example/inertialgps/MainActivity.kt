@@ -20,10 +20,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var tvStatus: TextView
     private lateinit var tvLocation: TextView
-    private lateinit var tvCalibration: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnToggleInertial: Button
-    private lateinit var btnCalibrate: Button
     private lateinit var btnShowMap: Button
     private lateinit var tvSysLogs: TextView
     private lateinit var tvLogs: TextView
@@ -40,11 +38,6 @@ class MainActivity : AppCompatActivity() {
                     lastLat = intent.getDoubleExtra("lat", 0.0)
                     lastLon = intent.getDoubleExtra("lon", 0.0)
                     tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lastLat, lastLon)
-                }
-                "com.example.inertialgps.CALIBRATION_DONE" -> {
-                    tvCalibration.text = "Bias is automatically calculated by ESKF ZUPT."
-                    btnCalibrate.isEnabled = false
-                    btnCalibrate.text = "Auto-Calibrated"
                 }
                 "com.example.inertialgps.GPS_WAITING" -> {
                     tvLocation.text = "Waiting for Real GPS fix..."
@@ -73,10 +66,8 @@ class MainActivity : AppCompatActivity() {
 
         tvStatus = findViewById(R.id.tvStatus)
         tvLocation = findViewById(R.id.tvLocation)
-        tvCalibration = findViewById(R.id.tvCalibration)
         btnToggle = findViewById(R.id.btnToggle)
         btnToggleInertial = findViewById(R.id.btnToggleInertial)
-        btnCalibrate = findViewById(R.id.btnCalibrate)
         btnShowMap = findViewById(R.id.btnShowMap)
         tvSysLogs = findViewById(R.id.tvSysLogs)
         tvLogs = findViewById(R.id.tvLogs)
@@ -143,21 +134,12 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
             updateUIState()
         }
-        
-        btnCalibrate.setOnClickListener {
-            btnCalibrate.isEnabled = false
-            btnCalibrate.text = "Calibrating... Keep Still"
-            val intent = Intent(this, MockLocationService::class.java)
-            intent.action = "START_CALIBRATION"
-            startService(intent)
-        }
     }
 
     override fun onResume() {
         super.onResume()
         val filter = IntentFilter().apply {
             addAction("com.example.inertialgps.LOCATION_UPDATE")
-            addAction("com.example.inertialgps.CALIBRATION_DONE")
             addAction("com.example.inertialgps.GPS_WAITING")
             addAction("com.example.inertialgps.MOCK_DENIED")
             addAction("com.example.inertialgps.PDR_LOG")
@@ -202,20 +184,18 @@ class MainActivity : AppCompatActivity() {
         if (isServiceRunning) {
             btnToggle.text = "Stop Service"
             btnToggleInertial.isEnabled = true
-            btnCalibrate.isEnabled = true
-            if (isInertialEnabled) {
-                btnToggleInertial.text = "Disable Inertial Mode"
-                tvStatus.text = "Status: Service Running (Inertial ON)"
-            } else {
-                btnToggleInertial.text = "Enable Inertial Mode"
-                tvStatus.text = "Status: Service Running (Inertial OFF)"
-            }
         } else {
             btnToggle.text = "Start Service"
             btnToggleInertial.isEnabled = false
+            isInertialEnabled = false
+        }
+        
+        if (isInertialEnabled) {
+            btnToggleInertial.text = "Disable Inertial Mode"
+            tvStatus.text = "Status: Service Running (Inertial ON)"
+        } else {
             btnToggleInertial.text = "Enable Inertial Mode"
-            btnCalibrate.isEnabled = false
-            tvStatus.text = "Status: Stopped"
+            tvStatus.text = if (isServiceRunning) "Status: Service Running" else "Status: Stopped"
         }
     }
 

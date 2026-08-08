@@ -49,15 +49,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var hasRotation = false
     private var isInertialMode = false
     
-    // Calibration
-    private var isCalibrating = false
-    private var biasX = 0f
-    private var biasY = 0f
-    private var biasZ = 0f
-    private var calibSumX = 0f
-    private var calibSumY = 0f
-    private var calibSumZ = 0f
-    private var calibCount = 0
+    // Calibration obsolete: dynamic ESKF ZUPT used
     
     private val stepDetector = StepDetector()
     private val CHANNEL_ID = "MockLocationServiceChannel"
@@ -109,20 +101,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             "DISABLE_INERTIAL" -> {
                 disableInertialMode()
             }
-            "START_CALIBRATION" -> {
-                startCalibration()
-            }
         }
-
         return START_STICKY
-    }
-    
-    private fun startCalibration() {
-        // Obsolete: Dynamic ESKF ZUPT handles this better.
-        val doneIntent = Intent("com.example.inertialgps.CALIBRATION_DONE").apply {
-            setPackage(packageName)
-        }
-        sendBroadcast(doneIntent)
     }
 
     private fun enableInertialMode() {
@@ -341,9 +321,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                             setPackage(packageName)
                             putExtra("log", sysLog)
                         })
+                        lastMockUpdateTime = currentTime
                     }
-                    
-                    lastMockUpdateTime = currentTime
                     
                     positionOffset[0] = eskf.position.get(0, 0).toFloat()
                     positionOffset[1] = eskf.position.get(1, 0).toFloat()
