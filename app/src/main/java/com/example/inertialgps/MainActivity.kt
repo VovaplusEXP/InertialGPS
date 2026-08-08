@@ -105,14 +105,6 @@ class MainActivity : AppCompatActivity() {
         }
         isServiceRunning = prefs.getBoolean("isServiceRunning", false)
         isInertialEnabled = prefs.getBoolean("isInertialEnabled", false)
-
-        val bx = prefs.getFloat("biasX", 0f)
-        val by = prefs.getFloat("biasY", 0f)
-        val bz = prefs.getFloat("biasZ", 0f)
-        if (bx != 0f || by != 0f || bz != 0f) {
-            tvCalibration.text = String.format("Bias: X:%.3f Y:%.3f Z:%.3f", bx, by, bz)
-        }
-        
         updateUIState()
 
         btnToggle.setOnClickListener {

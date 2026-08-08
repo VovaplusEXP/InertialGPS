@@ -61,10 +61,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("isServiceRunning", true).apply()
         
-        biasX = prefs.getFloat("biasX", 0f)
-        biasY = prefs.getFloat("biasY", 0f)
-        biasZ = prefs.getFloat("biasZ", 0f)
-
         linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
