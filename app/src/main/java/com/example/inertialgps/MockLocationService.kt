@@ -32,6 +32,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private lateinit var prefs: SharedPreferences
 
     private var linearAccelerationSensor: Sensor? = null
+    private var rawAccelSensor: Sensor? = null
+    private var gyroSensor: Sensor? = null
     private var rotationVectorSensor: Sensor? = null
 
     private var initialLat = 0.0
