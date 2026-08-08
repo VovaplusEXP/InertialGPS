@@ -56,6 +56,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var calibSumZ = 0f
     private var calibCount = 0
     
+    private val stepDetector = StepDetector()
     private val CHANNEL_ID = "MockLocationServiceChannel"
 
     override fun onCreate() {
@@ -69,9 +70,13 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         biasZ = prefs.getFloat("biasZ", 0f)
 
         linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        
+        // Use Game Rotation Vector for absolute attitude (no compass interference)
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
         if (rotationVectorSensor == null) {
-            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         }
 
         createNotificationChannel()
@@ -89,9 +94,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         when (intent?.action) {
             "START_SERVICE" -> {
                 isInertialMode = false
-                // Register sensors immediately if we want to allow calibration without enabling inertial mode
-                sensorManager.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_GAME)
-                sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME)
+                sensorManager.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_FASTEST)
+                sensorManager.registerListener(this, rawAccelSensor, SensorManager.SENSOR_DELAY_FASTEST)
+                sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST)
+                sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_FASTEST)
             }
             "ENABLE_INERTIAL" -> {
                 enableInertialMode()
@@ -216,50 +222,96 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
     }
 
+    private var currentGyro = FloatArray(3)
+    private var stepsTaken = 0
+    private var timeSinceLastStep = 0L
+    
+    private val eskf = ESKF()
+    private var isEskfInitialized = false
+
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR || event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+        val type = event.sensor.type
+        val currentTime = System.currentTimeMillis()
+        
+        if (type == Sensor.TYPE_ROTATION_VECTOR || type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
             hasRotation = true
-        } else if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
-            val axRaw = event.values[0]
-            val ayRaw = event.values[1]
-            val azRaw = event.values[2]
             
-            if (isCalibrating) {
-                calibSumX += axRaw
-                calibSumY += ayRaw
-                calibSumZ += azRaw
-                calibCount++
+            if (!isEskfInitialized) {
+                val q = FloatArray(4)
+                SensorManager.getQuaternionFromVector(q, event.values) // q = [w, x, y, z]
+                eskf.quaternion.set(0, 0, q[0].toDouble())
+                eskf.quaternion.set(1, 0, q[1].toDouble())
+                eskf.quaternion.set(2, 0, q[2].toDouble())
+                eskf.quaternion.set(3, 0, q[3].toDouble())
+                isEskfInitialized = true
             }
             
-            if (!gotInitialLocation || !isInertialMode || !hasRotation) return
-
-            val ax = axRaw - biasX
-            val ay = ayRaw - biasY
-            val az = azRaw - biasZ
-
-            val currentTime = System.currentTimeMillis()
-            val dt = (currentTime - lastTime) / 1000f
-            lastTime = currentTime
+        } else if (type == Sensor.TYPE_GYROSCOPE_UNCALIBRATED || type == Sensor.TYPE_GYROSCOPE) {
+            currentGyro[0] = event.values[0]
+            currentGyro[1] = event.values[1]
+            currentGyro[2] = event.values[2]
+        } else if (type == Sensor.TYPE_ACCELEROMETER_UNCALIBRATED || type == Sensor.TYPE_ACCELEROMETER) {
             
-            if (dt > 0.5f) return
-
-            val earthAx = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
-            val earthAy = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az
-            val earthAz = rotationMatrix[6] * ax + rotationMatrix[7] * ay + rotationMatrix[8] * az
-
-            velocity[0] += earthAx * dt
-            velocity[1] += earthAy * dt
-            velocity[2] += earthAz * dt
-
-            val dampening = 0.98f
-            velocity[0] *= dampening
-            velocity[1] *= dampening
-            velocity[2] *= dampening
-
-            positionOffset[0] += velocity[0] * dt
-            positionOffset[1] += velocity[1] * dt
-
+            if (isCalibrating) {
+                calibSumX += event.values[0]
+                calibSumY += event.values[1]
+                calibSumZ += event.values[2]
+                calibCount++
+                return
+            }
+            
+            if (!gotInitialLocation || !isInertialMode || !isEskfInitialized) return
+            
+            val dt = (currentTime - lastTime) / 1000.0
+            lastTime = currentTime
+            if (dt > 0.5 || dt <= 0.0) return
+            
+            // 1. ESKF Predict Step (100Hz)
+            eskf.predict(event.values, currentGyro, dt)
+            
+            // 2. Heuristic PDR
+            val isStep = stepDetector.process(event.values[0], event.values[1], event.values[2], currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
+            
+            if (isStep) {
+                stepsTaken++
+                timeSinceLastStep = currentTime
+                
+                val heading = kotlin.math.atan2(rotationMatrix[3].toDouble(), rotationMatrix[0].toDouble())
+                val stepLength = stepDetector.stepLength
+                val dx = stepLength * kotlin.math.cos(heading)
+                val dy = stepLength * kotlin.math.sin(heading) // Y is North
+                
+                // We provide ESKF with the *new* expected position based on PDR
+                val currentPos = eskf.position
+                val measuredPos = doubleArrayOf(
+                    currentPos.get(0, 0) + dx,
+                    currentPos.get(1, 0) + dy,
+                    currentPos.get(2, 0) // Assume z doesn't change much for PDR
+                )
+                
+                // 3. ESKF Update (Measurement)
+                eskf.updatePosition(measuredPos, 0.01) // 0.01 variance (high confidence in PDR)
+                
+            } else {
+                // 4. Pseudo-ZUPT
+                if (currentTime - timeSinceLastStep > 1000) {
+                    val ax = event.values[0]
+                    val ay = event.values[1]
+                    val az = event.values[2]
+                    val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
+                    
+                    // If device is very stationary (near 1g)
+                    if (kotlin.math.abs(accelVariance - 9.81f) < 0.2f) {
+                        eskf.updateZUPT(0.001) // 0.001 variance (very high confidence we are stopped)
+                    }
+                }
+            }
+            
+            // Sync ESKF state to map offset
+            positionOffset[0] = eskf.position.get(0, 0).toFloat()
+            positionOffset[1] = eskf.position.get(1, 0).toFloat()
+            
             updateMockLocation()
         }
     }
