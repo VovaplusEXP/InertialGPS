@@ -47,6 +47,10 @@ class MainActivity : AppCompatActivity() {
                 "com.example.inertialgps.GPS_WAITING" -> {
                     tvLocation.text = "Waiting for Real GPS fix..."
                 }
+                "com.example.inertialgps.MOCK_DENIED" -> {
+                    Toast.makeText(this@MainActivity, "Mock Location not set in Developer Options!", Toast.LENGTH_LONG).show()
+                    stopMockService()
+                }
             }
         }
     }
@@ -108,6 +112,7 @@ class MainActivity : AppCompatActivity() {
             addAction("com.example.inertialgps.LOCATION_UPDATE")
             addAction("com.example.inertialgps.CALIBRATION_DONE")
             addAction("com.example.inertialgps.GPS_WAITING")
+            addAction("com.example.inertialgps.MOCK_DENIED")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(locationUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)

@@ -70,6 +70,9 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
         linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        if (rotationVectorSensor == null) {
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        }
 
         createNotificationChannel()
     }
@@ -189,11 +192,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
         } catch (e: Exception) {
             Log.e("MockLocationService", "Error setting up mock provider", e)
+            sendBroadcast(Intent("com.example.inertialgps.MOCK_DENIED").apply { setPackage(packageName) })
         }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR || event.sensor.type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
             hasRotation = true
         } else if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
@@ -218,7 +222,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             val dt = (currentTime - lastTime) / 1000f
             lastTime = currentTime
             
-            // Limit dt to avoid huge jumps if sensor stalls
             if (dt > 0.5f) return
 
             val earthAx = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
@@ -229,7 +232,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             velocity[1] += earthAy * dt
             velocity[2] += earthAz * dt
 
-            val dampening = 0.98f // Reduced dampening slightly since we have calibration
+            val dampening = 0.98f
             velocity[0] *= dampening
             velocity[1] *= dampening
             velocity[2] *= dampening
@@ -256,14 +259,16 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             accuracy = 5.0f
         }
 
+        // Always broadcast to UI regardless of Mock Provider status
+        val intent = Intent("com.example.inertialgps.LOCATION_UPDATE").apply {
+            setPackage(packageName)
+            putExtra("lat", newLat)
+            putExtra("lon", newLon)
+        }
+        sendBroadcast(intent)
+
         try {
             locationManager.setTestProviderLocation(LocationManager.GPS_PROVIDER, mockLocation)
-            
-            val intent = Intent("com.example.inertialgps.LOCATION_UPDATE").apply {
-                putExtra("lat", newLat)
-                putExtra("lon", newLon)
-            }
-            sendBroadcast(intent)
         } catch (e: Exception) {
             Log.e("MockLocationService", "Error setting mock location", e)
         }
