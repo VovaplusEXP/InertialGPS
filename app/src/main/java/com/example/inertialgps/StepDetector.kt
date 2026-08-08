@@ -17,6 +17,7 @@ class StepDetector {
     
     // State
     private var lastPeakTime = 0L
+    private var lastValidStepTime = 0L
     private var lastPeakValue = 0f
     private var currentValleyValue = 0f
     private var isLookingForValley = false
@@ -39,7 +40,7 @@ class StepDetector {
     var stepLength = 0f
         private set
 
-    fun process(aWorld: DoubleArray, gx: Float, gy: Float, gz: Float, timestampMs: Long): Boolean {
+    fun process(aWorld: DoubleArray, gx: Float, gy: Float, gz: Float, vx: Float, vy: Float, timestampMs: Long): Boolean {
         val azRaw = aWorld[2].toFloat()
         
         // High-pass filter (DC removal) to eliminate false steps caused by rotating the phone's hardware bias
@@ -84,17 +85,25 @@ class StepDetector {
                 val dt = timestampMs - lastPeakTime
                 if (dt in MIN_STEP_DELAY_MS..MAX_STEP_DELAY_MS) {
                     val gyroVar = calculateVariance(gyroBuffer, gyroCount)
+                    val velMag = sqrt(vx * vx + vy * vy)
                     
-                    // Lowered horizontal requirement because texting/steady holding minimizes horizontal bounce too
-                    if (gyroVar < GYRO_VARIANCE_THRESHOLD && horizontalMag > 0.15f) {
+                    // 1. Strict Step Throttling (250ms absolute minimum between accepted steps)
+                    // 2. Gyro variance check (reject wild swinging)
+                    // 3. True Physical Velocity check (ESKF must see actual movement > 0.15 m/s)
+                    if (timestampMs - lastValidStepTime > 250L && gyroVar < GYRO_VARIANCE_THRESHOLD && velMag > 0.15f) {
                         stepLength = WEINBERG_K * sqrt(sqrt(lastPeakValue - currentValleyValue))
                         if (stepLength < 0.4f) stepLength = 0.4f
                         if (stepLength > 1.2f) stepLength = 1.2f
                         
                         stepDetected = true
-                        lastPeakTime = timestampMs
+                        lastValidStepTime = timestampMs
                     }
+                    // Always update lastPeakTime to prevent overlapping fast noise from triggering later
+                    lastPeakTime = timestampMs
                 } else if (dt > MAX_STEP_DELAY_MS) {
+                    lastPeakTime = timestampMs
+                } else {
+                    // dt < MIN_STEP_DELAY_MS, update peak time anyway to reject noise clumps
                     lastPeakTime = timestampMs
                 }
                 

@@ -243,7 +243,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             try {
                 eskf.predict(event.values, rotationMatrix, dt)
                 
-                val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
+                val vx = eskf.velocity.get(0, 0)
+                val vy = eskf.velocity.get(1, 0)
+                
+                val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], vx.toFloat(), vy.toFloat(), currentTime)
                 
                 if (isStep) {
                     stepsTaken++
