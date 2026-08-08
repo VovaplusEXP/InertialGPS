@@ -184,7 +184,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         setupMockProvider()
     }
 
-    private val MOCK_PROVIDERS = arrayOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused")
+    private val MOCK_PROVIDERS = arrayOf(LocationManager.GPS_PROVIDER)
 
     private fun setupMockProvider() {
         for (provider in MOCK_PROVIDERS) {
