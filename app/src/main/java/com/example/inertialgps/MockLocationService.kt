@@ -79,6 +79,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             .setContentTitle("Inertial GPS")
             .setContentText("Service running...")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setOngoing(true)
             .build()
         startForeground(1, notification)
 
