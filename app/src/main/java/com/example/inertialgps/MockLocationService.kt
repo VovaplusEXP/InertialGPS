@@ -129,6 +129,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     .apply()
                     
                 val doneIntent = Intent("com.example.inertialgps.CALIBRATION_DONE").apply {
+                    setPackage(packageName)
                     putExtra("biasX", biasX)
                     putExtra("biasY", biasY)
                     putExtra("biasZ", biasZ)
