@@ -81,8 +81,6 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("crash_log", sw.toString()).commit()
             defaultHandler?.uncaughtException(thread, throwable)
         }
-
-        val prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
         isServiceRunning = prefs.getBoolean("isServiceRunning", false)
         isInertialEnabled = prefs.getBoolean("isInertialEnabled", false)
 
