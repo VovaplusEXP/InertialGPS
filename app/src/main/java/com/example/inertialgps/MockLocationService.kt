@@ -219,12 +219,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             hasRotation = true
             
             if (!isEskfInitialized) {
-                val q = FloatArray(4)
-                SensorManager.getQuaternionFromVector(q, event.values)
-                eskf.quaternion.set(0, 0, q[0].toDouble())
-                eskf.quaternion.set(1, 0, q[1].toDouble())
-                eskf.quaternion.set(2, 0, q[2].toDouble())
-                eskf.quaternion.set(3, 0, q[3].toDouble())
                 isEskfInitialized = true
             }
             
@@ -247,7 +241,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             if (dt > 0.5 || dt <= 0.0) return
             
             try {
-                eskf.predict(event.values, currentGyro, dt)
+                eskf.predict(event.values, rotationMatrix, dt)
                 
                 val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], currentTime)
                 
