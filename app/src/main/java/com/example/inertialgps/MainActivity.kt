@@ -25,6 +25,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnToggleInertial: Button
     private lateinit var btnCalibrate: Button
     private lateinit var btnShowMap: Button
+    private lateinit var tvSysLogs: TextView
+    private lateinit var tvLogs: TextView
 
     private var isServiceRunning = false
     private var isInertialEnabled = false
@@ -55,6 +57,16 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this@MainActivity, "Mock Location not set in Developer Options!", Toast.LENGTH_LONG).show()
                     stopMockService()
                 }
+                "com.example.inertialgps.PDR_LOG" -> {
+                    val log = intent.getStringExtra("log") ?: return
+                    val currentText = tvLogs.text.toString()
+                    val lines = currentText.split("\n").takeLast(10) // Keep last 10 lines
+                    tvLogs.text = lines.joinToString("\n") + "\n" + log
+                }
+                "com.example.inertialgps.SYS_LOG" -> {
+                    val log = intent.getStringExtra("log") ?: return
+                    tvSysLogs.text = "System Status:\n$log"
+                }
             }
         }
     }
@@ -70,6 +82,8 @@ class MainActivity : AppCompatActivity() {
         btnToggleInertial = findViewById(R.id.btnToggleInertial)
         btnCalibrate = findViewById(R.id.btnCalibrate)
         btnShowMap = findViewById(R.id.btnShowMap)
+        tvSysLogs = findViewById(R.id.tvSysLogs)
+        tvLogs = findViewById(R.id.tvLogs)
         
         btnShowMap.setOnClickListener {
             if (lastLat != 0.0 && lastLon != 0.0) {
@@ -150,6 +164,8 @@ class MainActivity : AppCompatActivity() {
             addAction("com.example.inertialgps.CALIBRATION_DONE")
             addAction("com.example.inertialgps.GPS_WAITING")
             addAction("com.example.inertialgps.MOCK_DENIED")
+            addAction("com.example.inertialgps.PDR_LOG")
+            addAction("com.example.inertialgps.SYS_LOG")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(locationUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)

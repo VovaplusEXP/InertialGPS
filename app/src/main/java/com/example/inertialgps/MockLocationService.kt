@@ -329,6 +329,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     
                     eskf.updatePosition(measuredPos, 0.01)
                     
+                    val logMsg = String.format("Step %d: L=%.2fm, H=%.1f°, dx=%.2f, dy=%.2f", stepsTaken, stepLength, heading * 180.0 / Math.PI, dx, dy)
+                    sendBroadcast(Intent("com.example.inertialgps.PDR_LOG").apply {
+                        setPackage(packageName)
+                        putExtra("log", logMsg)
+                    })
+                    
                 } else {
                     if (currentTime - timeSinceLastStep > 1000) {
                         val ax = event.values[0]
@@ -344,6 +350,23 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                 
                 // Throttle UI and Mock Location updates to prevent Broadcast flooding (1 Hz or on Step)
                 if (currentTime - lastMockUpdateTime > 1000 || isStep) {
+                    
+                    if (currentTime - lastMockUpdateTime > 1000) {
+                        val v = eskf.velocity
+                        val p = eskf.position
+                        val b = eskf.accelBias
+                        val zupt = if (currentTime - timeSinceLastStep > 1000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.2f) "ZUPT Active" else "Moving"
+                        val sysLog = String.format("Pos: %.2f, %.2f, %.2f\nVel: %.2f, %.2f, %.2f\nBias: %.3f, %.3f, %.3f\nState: %s", 
+                            p.get(0,0), p.get(1,0), p.get(2,0),
+                            v.get(0,0), v.get(1,0), v.get(2,0),
+                            b.get(0,0), b.get(1,0), b.get(2,0),
+                            zupt)
+                        sendBroadcast(Intent("com.example.inertialgps.SYS_LOG").apply {
+                            setPackage(packageName)
+                            putExtra("log", sysLog)
+                        })
+                    }
+                    
                     lastMockUpdateTime = currentTime
                     
                     positionOffset[0] = eskf.position.get(0, 0).toFloat()

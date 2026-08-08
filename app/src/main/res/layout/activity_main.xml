@@ -62,7 +62,26 @@
         android:id="@+id/btnShowMap"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
         android:text="Show Mock on Map" />
+        
+    <TextView
+        android:id="@+id/tvSysLogs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="System Status:\n"
+        android:textSize="12sp"
+        android:typeface="monospace"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:id="@+id/tvLogs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="PDR Logs:\n"
+        android:textSize="12sp"
+        android:typeface="monospace"
+        android:layout_marginTop="16dp" />
 
     </LinearLayout>
 </ScrollView>
