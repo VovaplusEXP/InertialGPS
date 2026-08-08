@@ -162,10 +162,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         if (!isInertialMode) return
         isInertialMode = false
         
-        try {
-            locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
-        } catch (e: Exception) {
-            Log.e("MockLocationService", "Error removing mock provider", e)
+        sensorManager.unregisterListener(this)
+        for (provider in MOCK_PROVIDERS) {
+            try {
+                locationManager.removeTestProvider(provider)
+            } catch (e: Exception) {}
         }
     }
 
@@ -183,23 +184,29 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         setupMockProvider()
     }
 
-    private fun setupMockProvider() {
-        try {
-            // Android might keep the test provider if the app crashed previously
-            try {
-                locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
-            } catch (e: Exception) {}
+    private val MOCK_PROVIDERS = arrayOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused")
 
-            locationManager.addTestProvider(
-                LocationManager.GPS_PROVIDER, false, false, false, false,
-                true, true, true, 0, 1
-            )
-            locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
-        } catch (e: SecurityException) {
-            Log.e("MockLocationService", "SecurityException: Mock provider permission denied", e)
-            sendBroadcast(Intent("com.example.inertialgps.MOCK_DENIED").apply { setPackage(packageName) })
-        } catch (e: IllegalArgumentException) {
-            Log.e("MockLocationService", "IllegalArgumentException setting up mock provider", e)
+    private fun setupMockProvider() {
+        for (provider in MOCK_PROVIDERS) {
+            try {
+                try {
+                    locationManager.removeTestProvider(provider)
+                } catch (e: Exception) {}
+
+                locationManager.addTestProvider(
+                    provider, false, false, false, false,
+                    true, true, true, 0, 1
+                )
+                locationManager.setTestProviderEnabled(provider, true)
+            } catch (e: SecurityException) {
+                Log.e("MockLocationService", "SecurityException: Mock provider permission denied", e)
+                sendBroadcast(Intent("com.example.inertialgps.MOCK_DENIED").apply { setPackage(packageName) })
+                return
+            } catch (e: IllegalArgumentException) {
+                Log.e("MockLocationService", "IllegalArgumentException setting up mock provider $provider", e)
+            } catch (e: Exception) {
+                Log.e("MockLocationService", "Error setting up mock provider $provider", e)
+            }
         }
     }
 
@@ -257,7 +264,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         val lonOffset = positionOffset[0] / (111111.0 * cos(initialLat * PI / 180.0))
         val newLon = initialLon + lonOffset
 
-        val mockLocation = Location(LocationManager.GPS_PROVIDER).apply {
+        val baseLocation = Location(LocationManager.GPS_PROVIDER).apply {
             latitude = newLat
             longitude = newLon
             altitude = 0.0
@@ -266,7 +273,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             accuracy = 5.0f
         }
 
-        // Always broadcast to UI regardless of Mock Provider status
         val intent = Intent("com.example.inertialgps.LOCATION_UPDATE").apply {
             setPackage(packageName)
             putExtra("lat", newLat)
@@ -274,10 +280,14 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
         sendBroadcast(intent)
 
-        try {
-            locationManager.setTestProviderLocation(LocationManager.GPS_PROVIDER, mockLocation)
-        } catch (e: Exception) {
-            Log.e("MockLocationService", "Error setting mock location", e)
+        for (provider in MOCK_PROVIDERS) {
+            try {
+                val mockLocation = Location(baseLocation)
+                mockLocation.provider = provider
+                locationManager.setTestProviderLocation(provider, mockLocation)
+            } catch (e: Exception) {
+                // Ignore silent failures for fused/network if unsupported
+            }
         }
     }
 
