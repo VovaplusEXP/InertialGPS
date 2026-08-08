@@ -26,6 +26,10 @@ class StepDetector {
     private var gyroIndex = 0
     private var gyroCount = 0
     
+    // High-Pass Filter state for Z-axis
+    private var azDC = 0f
+    private var azPrev = 0f
+    
     // 200 samples = ~1 sec at 200Hz
     private val zBuffer = FloatArray(200)
     private var zIndex = 0
@@ -36,7 +40,11 @@ class StepDetector {
         private set
 
     fun process(aWorld: DoubleArray, gx: Float, gy: Float, gz: Float, timestampMs: Long): Boolean {
-        val az = aWorld[2].toFloat()
+        val azRaw = aWorld[2].toFloat()
+        
+        // High-pass filter (DC removal) to eliminate false steps caused by rotating the phone's hardware bias
+        azDC = azDC + 0.005f * (azRaw - azDC)
+        val az = azRaw - azDC
         val ax = aWorld[0].toFloat()
         val ay = aWorld[1].toFloat()
         val horizontalMag = sqrt(ax * ax + ay * ay)
@@ -102,15 +110,15 @@ class StepDetector {
         if (zCount < 50) return
         val zVar = calculateVariance(zBuffer, zCount)
         
-        // Texting Mode (low variance): threshold drops to ~0.25
+        // Texting Mode (low variance): threshold drops to ~0.45
         // Pocket Mode (high variance): threshold rises to ~1.5
-        dynamicPeakThreshold = 0.2f + 0.3f * zVar
+        dynamicPeakThreshold = 0.4f + 0.3f * zVar
         if (dynamicPeakThreshold > 1.5f) dynamicPeakThreshold = 1.5f
-        if (dynamicPeakThreshold < 0.25f) dynamicPeakThreshold = 0.25f
+        if (dynamicPeakThreshold < 0.45f) dynamicPeakThreshold = 0.45f
         
-        dynamicValleyThreshold = -(0.1f + 0.2f * zVar)
+        dynamicValleyThreshold = -(0.25f + 0.2f * zVar)
         if (dynamicValleyThreshold < -1.0f) dynamicValleyThreshold = -1.0f
-        if (dynamicValleyThreshold > -0.15f) dynamicValleyThreshold = -0.15f
+        if (dynamicValleyThreshold > -0.3f) dynamicValleyThreshold = -0.3f
     }
 
     private fun calculateVariance(buffer: FloatArray, count: Int): Float {
