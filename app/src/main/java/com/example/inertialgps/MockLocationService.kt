@@ -40,6 +40,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     private val rotationMatrix = FloatArray(9)
     private var hasRotation = false
+    private var isInertialMode = false
     
     private val CHANNEL_ID = "MockLocationServiceChannel"
 
@@ -57,12 +58,33 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Inertial GPS")
-            .setContentText("Running mock location...")
+            .setContentText("Service running...")
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .build()
         startForeground(1, notification)
 
-        // Request initial location
+        when (intent?.action) {
+            "START_SERVICE" -> {
+                // Just start, don't hijack GPS yet. Wait for enable inertial mode.
+                isInertialMode = false
+            }
+            "ENABLE_INERTIAL" -> {
+                enableInertialMode()
+            }
+            "DISABLE_INERTIAL" -> {
+                disableInertialMode()
+            }
+        }
+
+        return START_STICKY
+    }
+
+    private fun enableInertialMode() {
+        if (isInertialMode) return
+        isInertialMode = true
+        gotInitialLocation = false
+
+        // Request initial location to start tracking
         try {
             val lastLoc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
@@ -74,14 +96,30 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         } catch (e: SecurityException) {
             e.printStackTrace()
         }
+    }
 
-        return START_STICKY
+    private fun disableInertialMode() {
+        if (!isInertialMode) return
+        isInertialMode = false
+        
+        sensorManager.unregisterListener(this)
+        try {
+            locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
+        } catch (e: Exception) {
+            Log.e("MockLocationService", "Error removing mock provider", e)
+        }
     }
 
     private fun setInitialLocation(location: Location) {
-        if (gotInitialLocation) return
+        if (gotInitialLocation || !isInertialMode) return
+        
         initialLat = location.latitude
         initialLon = location.longitude
+        
+        // Reset state
+        velocity.fill(0f)
+        positionOffset.fill(0f)
+        
         gotInitialLocation = true
 
         setupMockProvider()
@@ -96,7 +134,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             )
             locationManager.setTestProviderEnabled(LocationManager.GPS_PROVIDER, true)
         } catch (e: Exception) {
-            Log.e("MockLocationService", "Error setting up mock provider. Is it selected in Developer Options?", e)
+            Log.e("MockLocationService", "Error setting up mock provider", e)
         }
     }
 
@@ -107,7 +145,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        if (!gotInitialLocation) return
+        if (!gotInitialLocation || !isInertialMode) return
 
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
@@ -117,43 +155,33 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             val dt = (currentTime - lastTime) / 1000f // seconds
             lastTime = currentTime
 
-            // Transform local phone linear acceleration to Earth frame (East, North, Up)
             val ax = event.values[0]
             val ay = event.values[1]
             val az = event.values[2]
 
-            // Matrix-vector multiplication
-            val earthAx = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az // East
-            val earthAy = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az // North
-            val earthAz = rotationMatrix[6] * ax + rotationMatrix[7] * ay + rotationMatrix[8] * az // Up
+            val earthAx = rotationMatrix[0] * ax + rotationMatrix[1] * ay + rotationMatrix[2] * az
+            val earthAy = rotationMatrix[3] * ax + rotationMatrix[4] * ay + rotationMatrix[5] * az
+            val earthAz = rotationMatrix[6] * ax + rotationMatrix[7] * ay + rotationMatrix[8] * az
 
-            // Integrate acceleration to velocity
             velocity[0] += earthAx * dt
             velocity[1] += earthAy * dt
             velocity[2] += earthAz * dt
 
-            // Apply artificial dampening to prevent infinite drift (since pure INS drifts terribly)
-            // This simulates friction / walking characteristics. It resets velocity to 0 very quickly if no accel.
             val dampening = 0.95f
             velocity[0] *= dampening
             velocity[1] *= dampening
             velocity[2] *= dampening
 
-            // Integrate velocity to position
-            positionOffset[0] += velocity[0] * dt // East displacement (meters)
-            positionOffset[1] += velocity[1] * dt // North displacement (meters)
+            positionOffset[0] += velocity[0] * dt
+            positionOffset[1] += velocity[1] * dt
 
             updateMockLocation()
         }
     }
 
     private fun updateMockLocation() {
-        // Convert offset in meters to lat/lon
-        // 1 degree latitude is approx 111,111 meters
         val latOffset = positionOffset[1] / 111111.0
         val newLat = initialLat + latOffset
-
-        // 1 degree longitude is approx 111,111 * cos(latitude) meters
         val lonOffset = positionOffset[0] / (111111.0 * cos(initialLat * PI / 180.0))
         val newLon = initialLon + lonOffset
 
@@ -169,7 +197,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         try {
             locationManager.setTestProviderLocation(LocationManager.GPS_PROVIDER, mockLocation)
             
-            // Send update to UI
             val intent = Intent("LOCATION_UPDATE").apply {
                 putExtra("lat", newLat)
                 putExtra("lon", newLon)
@@ -191,10 +218,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        sensorManager.unregisterListener(this)
-        try {
-            locationManager.removeTestProvider(LocationManager.GPS_PROVIDER)
-        } catch (e: Exception) {}
+        disableInertialMode()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

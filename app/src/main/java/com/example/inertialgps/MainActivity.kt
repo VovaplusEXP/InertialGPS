@@ -19,8 +19,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvLocation: TextView
     private lateinit var btnToggle: Button
+    private lateinit var btnToggleInertial: Button
 
     private var isServiceRunning = false
+    private var isInertialEnabled = false
 
     private val locationUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvLocation = findViewById(R.id.tvLocation)
         btnToggle = findViewById(R.id.btnToggle)
+        btnToggleInertial = findViewById(R.id.btnToggleInertial)
 
         btnToggle.setOnClickListener {
             if (isServiceRunning) {
@@ -46,6 +49,21 @@ class MainActivity : AppCompatActivity() {
             } else {
                 checkPermissionsAndStart()
             }
+        }
+
+        btnToggleInertial.setOnClickListener {
+            isInertialEnabled = !isInertialEnabled
+            val intent = Intent(this, MockLocationService::class.java)
+            if (isInertialEnabled) {
+                intent.action = "ENABLE_INERTIAL"
+                btnToggleInertial.text = "Disable Inertial Mode"
+                tvStatus.text = "Status: Service Running (Inertial ON)"
+            } else {
+                intent.action = "DISABLE_INERTIAL"
+                btnToggleInertial.text = "Enable Inertial Mode"
+                tvStatus.text = "Status: Service Running (Inertial OFF)"
+            }
+            startService(intent) // Send intent to running service
         }
     }
 
@@ -86,6 +104,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startMockService() {
         val intent = Intent(this, MockLocationService::class.java)
+        intent.action = "START_SERVICE"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -93,14 +112,18 @@ class MainActivity : AppCompatActivity() {
         }
         isServiceRunning = true
         btnToggle.text = "Stop Service"
-        tvStatus.text = "Status: Running"
+        btnToggleInertial.isEnabled = true
+        tvStatus.text = "Status: Service Running (Inertial OFF)"
     }
 
     private fun stopMockService() {
         val intent = Intent(this, MockLocationService::class.java)
         stopService(intent)
         isServiceRunning = false
+        isInertialEnabled = false
         btnToggle.text = "Start Service"
+        btnToggleInertial.isEnabled = false
+        btnToggleInertial.text = "Enable Inertial Mode"
         tvStatus.text = "Status: Stopped"
     }
 }
