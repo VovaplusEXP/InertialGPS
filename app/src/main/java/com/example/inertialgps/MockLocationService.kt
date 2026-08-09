@@ -220,6 +220,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var savedBodyAxisX = 0.0
     private var savedBodyAxisY = 1.0
     private var hasSavedBodyAxis = false
+    private var currentNhcHeading = 0.0
     
     private val eskf = ESKF()
     private var isEskfInitialized = false
@@ -355,14 +356,14 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                             Triple(currentVx, currentVy, mag)
                         }
                         
-                        var nhcHeading = 0.0
+                        currentNhcHeading = 0.0
                         var applyNhc = false
 
                         if (vMag > 2.0) {
-                            nhcHeading = kotlin.math.atan2(vY, vX)
-                            
-                            val wX = kotlin.math.cos(nhcHeading).toFloat()
-                            val wY = kotlin.math.sin(nhcHeading).toFloat()
+                            currentNhcHeading = kotlin.math.atan2(vY, vX)
+                            // Save world-to-body heading
+                            val wX = kotlin.math.cos(currentNhcHeading).toFloat()
+                            val wY = kotlin.math.sin(currentNhcHeading).toFloat()
                             
                             savedBodyAxisX = (rotationMatrix[0]*wX + rotationMatrix[3]*wY + rotationMatrix[6]*0f).toDouble()
                             savedBodyAxisY = (rotationMatrix[1]*wX + rotationMatrix[4]*wY + rotationMatrix[7]*0f).toDouble()
@@ -375,13 +376,13 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                             val wX = rotationMatrix[0]*bX + rotationMatrix[1]*bY
                             val wY = rotationMatrix[3]*bX + rotationMatrix[4]*bY
                             
-                            nhcHeading = kotlin.math.atan2(wY.toDouble(), wX.toDouble())
+                            currentNhcHeading = kotlin.math.atan2(wY.toDouble(), wX.toDouble())
                             applyNhc = true
                         }
                         
                         if (applyNhc) {
                             val rCov = if (vMag > 2.0) 0.1 else 1.0 // Soft NHC on low speeds
-                            eskf.updateLateralVelocity(nhcHeading, rCov)
+                            eskf.updateLateralVelocity(currentNhcHeading, rCov)
                         }
                     } else {
                         hasSavedBodyAxis = false // Reset freeze if phone turned heavily
@@ -419,7 +420,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         diagLog.append(String.format("NHC Freeze Active: %s\n", hasSavedBodyAxis))
                         if (hasSavedBodyAxis) {
                             diagLog.append(String.format("NHC Body X: %.2f, Y: %.2f\n", savedBodyAxisX, savedBodyAxisY))
-                            diagLog.append(String.format("NHC Heading (rad): %.2f\n", nhcHeading))
+                            diagLog.append(String.format("NHC Heading (rad): %.2f\n", currentNhcHeading))
                         }
                         diagLog.append(String.format("ESKF Velocity (Mag): %.2f m/s\n", kotlin.math.sqrt(v.get(0,0)*v.get(0,0) + v.get(1,0)*v.get(1,0))))
                         
