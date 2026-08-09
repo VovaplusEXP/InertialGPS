@@ -207,6 +207,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var timeSinceLastStep = 0L
     private var lastMockUpdateTime = 0L
     
+    // ZUPT Window
+    private val accelWindow = FloatArray(15)
+    private var windowIndex = 0
+    private var isWindowFull = false
+    private var isZuptActive = false
+    
     private val eskf = ESKF()
     private var isEskfInitialized = false
 
@@ -284,16 +290,33 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         putExtra("log", logMsg)
                     })
                     
-                } else {
-                    if (currentTime - timeSinceLastStep > 2000) {
-                        val ax = event.values[0]
-                        val ay = event.values[1]
-                        val az = event.values[2]
-                        val accelVariance = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
-                        
-                        if (kotlin.math.abs(accelVariance - 9.81f) < 0.3f) {
-                            eskf.updateZUPT(0.5)
-                        }
+                }
+                
+                // ZUPT logic
+                val ax = event.values[0]
+                val ay = event.values[1]                                          
+                val az = event.values[2]
+                val magnitude = kotlin.math.sqrt(ax*ax + ay*ay + az*az)
+                
+                accelWindow[windowIndex] = magnitude
+                windowIndex = (windowIndex + 1) % accelWindow.size
+                if (windowIndex == 0) isWindowFull = true
+                
+                isZuptActive = false
+                if (isWindowFull && (currentTime - timeSinceLastStep > 500)) {
+                    var minMag = accelWindow[0]
+                    var maxMag = accelWindow[0]
+                    
+                    for (i in 1 until accelWindow.size) {
+                        if (accelWindow[i] < minMag) minMag = accelWindow[i]
+                        if (accelWindow[i] > maxMag) maxMag = accelWindow[i]
+                    }
+                    
+                    val signalSpread = maxMag - minMag
+                    
+                    if (signalSpread < 0.15f) { 
+                        eskf.updateZUPT(0.01)
+                        isZuptActive = true
                     }
                 }
                 
@@ -304,12 +327,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         val v = eskf.velocity
                         val p = eskf.position
                         val b = eskf.accelBias
-                        val zupt = if (currentTime - timeSinceLastStep > 2000 && kotlin.math.abs(kotlin.math.sqrt(event.values[0]*event.values[0] + event.values[1]*event.values[1] + event.values[2]*event.values[2]) - 9.81f) < 0.3f) "ZUPT Active" else "Moving"
+                        val zuptStr = if (isZuptActive) "ZUPT Active" else "Moving"
                         val sysLog = String.format("Pos: %.2f, %.2f, %.2f\nVel: %.2f, %.2f, %.2f\nBias: %.3f, %.3f, %.3f\nState: %s", 
                             p.get(0,0), p.get(1,0), p.get(2,0),
                             v.get(0,0), v.get(1,0), v.get(2,0),
                             b.get(0,0), b.get(1,0), b.get(2,0),
-                            zupt)
+                            zuptStr)
                         sendBroadcast(Intent("com.example.inertialgps.SYS_LOG").apply {
                             setPackage(packageName)
                             putExtra("log", sysLog)
