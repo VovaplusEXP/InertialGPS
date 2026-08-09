@@ -395,7 +395,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                 
                 // Throttle UI and Mock Location updates to prevent Broadcast flooding (1 Hz or on Step)
                 if (currentTime - lastMockUpdateTime > 1000 || isStep) {
-                    
                     if (currentTime - lastMockUpdateTime > 1000) {
                         val v = eskf.velocity
                         val p = eskf.position
@@ -410,6 +409,25 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                             setPackage(packageName)
                             putExtra("log", sysLog)
                         })
+                        
+                        // New detailed diagnostics
+                        val vGnss = gnssAdapter.getVelocity()
+                        val diagLog = StringBuilder()
+                        diagLog.append("--- ENGINE DIAGNOSTICS ---\n")
+                        diagLog.append(String.format("ZUPT State: %s\n", zuptStr))
+                        diagLog.append(String.format("GNSS Velocity: %s\n", if (vGnss != null) String.format("%.2f, %.2f, %.2f (cov: %.2f)", vGnss.vx, vGnss.vy, vGnss.vz, vGnss.covariance) else "Unavailable"))
+                        diagLog.append(String.format("NHC Freeze Active: %s\n", hasSavedBodyAxis))
+                        if (hasSavedBodyAxis) {
+                            diagLog.append(String.format("NHC Body X: %.2f, Y: %.2f\n", savedBodyAxisX, savedBodyAxisY))
+                            diagLog.append(String.format("NHC Heading (rad): %.2f\n", nhcHeading))
+                        }
+                        diagLog.append(String.format("ESKF Velocity (Mag): %.2f m/s\n", kotlin.math.sqrt(v.get(0,0)*v.get(0,0) + v.get(1,0)*v.get(1,0))))
+                        
+                        sendBroadcast(Intent("com.example.inertialgps.DIAG_LOG").apply {
+                            setPackage(packageName)
+                            putExtra("log", diagLog.toString())
+                        })
+                        
                         lastMockUpdateTime = currentTime
                     }
                     

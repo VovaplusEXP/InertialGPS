@@ -12,17 +12,30 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import android.net.Uri
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.GravityCompat
+import androidx.drawerlayout.widget.DrawerLayout
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.navigation.NavigationView
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var drawerLayout: DrawerLayout
+    private lateinit var navView: NavigationView
+    private lateinit var layoutPanel: View
+    private lateinit var layoutLogs: View
+    private lateinit var topAppBar: MaterialToolbar
 
     private lateinit var tvStatus: TextView
     private lateinit var tvLocation: TextView
     private lateinit var btnToggle: Button
     private lateinit var btnToggleInertial: Button
     private lateinit var btnShowMap: Button
+    
+    private lateinit var tvDiagnostics: TextView
     private lateinit var tvSysLogs: TextView
     private lateinit var tvLogs: TextView
 
@@ -49,12 +62,16 @@ class MainActivity : AppCompatActivity() {
                 "com.example.inertialgps.PDR_LOG" -> {
                     val log = intent.getStringExtra("log") ?: return
                     val currentText = tvLogs.text.toString()
-                    val lines = currentText.split("\n").takeLast(10) // Keep last 10 lines
+                    val lines = currentText.split("\n").takeLast(10)
                     tvLogs.text = lines.joinToString("\n") + "\n" + log
                 }
                 "com.example.inertialgps.SYS_LOG" -> {
                     val log = intent.getStringExtra("log") ?: return
                     tvSysLogs.text = "System Status:\n$log"
+                }
+                "com.example.inertialgps.DIAG_LOG" -> {
+                    val log = intent.getStringExtra("log") ?: return
+                    tvDiagnostics.text = log
                 }
             }
         }
@@ -64,11 +81,39 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        drawerLayout = findViewById(R.id.drawerLayout)
+        navView = findViewById(R.id.navView)
+        layoutPanel = findViewById(R.id.layoutPanel)
+        layoutLogs = findViewById(R.id.layoutLogs)
+        topAppBar = findViewById(R.id.topAppBar)
+
+        topAppBar.setNavigationOnClickListener {
+            drawerLayout.openDrawer(GravityCompat.START)
+        }
+        
+        navView.setNavigationItemSelectedListener { menuItem ->
+            when (menuItem.itemId) {
+                R.id.nav_panel -> {
+                    layoutPanel.visibility = View.VISIBLE
+                    layoutLogs.visibility = View.GONE
+                    topAppBar.title = "Control Panel"
+                }
+                R.id.nav_logs -> {
+                    layoutPanel.visibility = View.GONE
+                    layoutLogs.visibility = View.VISIBLE
+                    topAppBar.title = "Diagnostic Logs"
+                }
+            }
+            drawerLayout.closeDrawer(GravityCompat.START)
+            true
+        }
+
         tvStatus = findViewById(R.id.tvStatus)
         tvLocation = findViewById(R.id.tvLocation)
         btnToggle = findViewById(R.id.btnToggle)
         btnToggleInertial = findViewById(R.id.btnToggleInertial)
         btnShowMap = findViewById(R.id.btnShowMap)
+        tvDiagnostics = findViewById(R.id.tvDiagnostics)
         tvSysLogs = findViewById(R.id.tvSysLogs)
         tvLogs = findViewById(R.id.tvLogs)
         
@@ -136,6 +181,7 @@ class MainActivity : AppCompatActivity() {
             addAction("com.example.inertialgps.MOCK_DENIED")
             addAction("com.example.inertialgps.PDR_LOG")
             addAction("com.example.inertialgps.SYS_LOG")
+            addAction("com.example.inertialgps.DIAG_LOG")
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(locationUpdateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
