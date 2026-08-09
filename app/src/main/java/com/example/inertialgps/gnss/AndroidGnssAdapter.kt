@@ -5,10 +5,13 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.location.GnssMeasurementRequest
 import android.location.GnssMeasurementsEvent
+import android.location.GnssNavigationMessage
 import android.location.LocationManager
 import android.os.Build
 import android.util.Log
 import androidx.core.app.ActivityCompat
+import androidx.core.app.ActivityCompat
+import com.google.location.lbs.gnss.gps.pseudorange.PseudorangePositionVelocityFromRealTimeEvents
 import java.util.concurrent.Executors
 
 /**
@@ -20,34 +23,72 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private val executor = Executors.newSingleThreadExecutor()
     
+    // Instantiate the imported Google WLS Solver
+    private val pvtSolver = PseudorangePositionVelocityFromRealTimeEvents()
+    
     // The currently computed velocity from the PVT Solver
     private var currentVelocity: GnssVelocity? = null
 
     private val gnssCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
             val measurements = event.measurements
-            if (measurements.isEmpty()) return
+            try {
+                // Ensure the solver has a reference location to initialize properly (or else it aborts)
+                val lastLoc = locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+                if (lastLoc != null) {
+                    pvtSolver.setReferencePosition(
+                        (lastLoc.latitude * 1e7).toInt(), 
+                        (lastLoc.longitude * 1e7).toInt(), 
+                        (lastLoc.altitude * 1e7).toInt()
+                    )
+                } else {
+                    pvtSolver.setReferencePosition(0, 0, 0)
+                }
 
-            // TODO: Pass 'measurements' to the 3rd-party WLS PVT Solver (e.g. GNSS Compare).
-            // The solver will extract 'pseudorangeRateMetersPerSecond' from each satellite,
-            // calculate Ephemeris, and perform Least Squares to find True Velocity.
-            
-            // For now, we log the number of visible satellites providing Doppler data
-            var dopplerCount = 0
-            for (measurement in measurements) {
-                // In API 24+, pseudorangeRateMetersPerSecond is widely available 
-                // so we just count the valid measurements (non-empty)
-                dopplerCount++
+                // Feed raw measurements to the Google WLS solver
+                pvtSolver.computePositionVelocitySolutionsFromRawMeas(event)
+                
+                val velEnu = pvtSolver.velocitySolutionEnuMps
+                val uncertEnu = pvtSolver.positionVelocityUncertaintyEnu
+                
+                // Check if solver successfully output valid numbers (not NaN)
+                if (velEnu != null && velEnu.size >= 3 && !velEnu[0].isNaN()) {
+                    // Extract Covariance/Uncertainty (using max horizontal uncertainty as a scalar)
+                    var covariance = 100.0
+                    if (uncertEnu != null && uncertEnu.size >= 6 && !uncertEnu[3].isNaN()) {
+                        // Indexes 3,4 are Vx, Vy uncertainties
+                        covariance = kotlin.math.max(uncertEnu[3], uncertEnu[4])
+                    }
+                    
+                    currentVelocity = GnssVelocity(
+                        vx = velEnu[0],
+                        vy = velEnu[1],
+                        vz = velEnu[2],
+                        covariance = covariance
+                    )
+                } else {
+                    // Solver didn't converge this epoch
+                    currentVelocity = null
+                }
+            } catch (e: Exception) {
+                Log.e("GNSS_Adapter", "PVT Solver Error", e)
+                currentVelocity = null
             }
-            // Log.d("GNSS_Adapter", "Received raw measurements from $dopplerCount satellites with Doppler.")
-            
-            // When the solver is implemented, it will set currentVelocity here:
-            // currentVelocity = pvtSolver.solveVelocity(measurements)
         }
 
         override fun onStatusChanged(status: Int) {
             super.onStatusChanged(status)
             Log.d("GNSS_Adapter", "GNSS Status changed: $status")
+        }
+    }
+    
+    private val navCallback = object : GnssNavigationMessage.Callback() {
+        override fun onGnssNavigationMessageReceived(event: GnssNavigationMessage) {
+            try {
+                pvtSolver.parseHwNavigationMessageUpdates(event)
+            } catch (e: Exception) {
+                Log.e("GNSS_Adapter", "Nav Message Parse Error", e)
+            }
         }
     }
 
@@ -62,6 +103,9 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
         }
 
         try {
+            // Register Navigation Messages
+            locationManager.registerGnssNavigationMessageCallback(executor, navCallback)
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // API 31+: Force Full Tracking to bypass Duty Cycling
                 val request = GnssMeasurementRequest.Builder()
@@ -79,6 +123,7 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
     }
 
     override fun stop() {
+        locationManager.unregisterGnssNavigationMessageCallback(navCallback)
         locationManager.unregisterGnssMeasurementsCallback(gnssCallback)
         Log.d("GNSS_Adapter", "Unregistered GNSS measurements.")
     }
