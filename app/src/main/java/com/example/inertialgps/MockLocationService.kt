@@ -161,8 +161,6 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         eskf.position.fill(0.0)
         eskf.velocity.fill(0.0)
         isEskfInitialized = false
-        pdrX = 0.0
-        pdrY = 0.0
         
         gotInitialLocation = true
         lastTime = System.currentTimeMillis()
@@ -199,10 +197,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         }
     }
 
-    private var pdrX = 0.0
-    private var pdrY = 0.0
-
     private var currentGyro = FloatArray(3)
+    
     private var stepsTaken = 0
     private var timeSinceLastStep = 0L
     private var lastMockUpdateTime = 0L
@@ -254,45 +250,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                 
                 val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], vx.toFloat(), vy.toFloat(), currentTime)
                 
-                if (isStep) {
-                    stepsTaken++
-                    timeSinceLastStep = currentTime
-                    
-                    // Path B: True Physical Heading via ESKF Velocity
-                    val vx = eskf.velocity.get(0, 0)
-                    val vy = eskf.velocity.get(1, 0)
-                    
-                    // Fallback to compass if velocity is too small to determine direction
-                    val heading = if (kotlin.math.abs(vx) > 0.1 || kotlin.math.abs(vy) > 0.1) {
-                        kotlin.math.atan2(vy, vx)
-                    } else {
-                        kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
-                    }
-
-                    val stepLength = stepDetector.stepLength
-                    val dx = stepLength * kotlin.math.cos(heading)
-                    val dy = stepLength * kotlin.math.sin(heading)
-                    
-                    pdrX += dx
-                    pdrY += dy
-                    
-                    val measuredPos = doubleArrayOf(
-                        pdrX,
-                        pdrY,
-                        eskf.position.get(2, 0) // Assume z doesn't change much for PDR
-                    )
-                    
-                    eskf.updatePosition(measuredPos, 0.01)
-                    
-                    val logMsg = String.format("Step %d: L=%.2fm, H=%.1f°, dx=%.2f, dy=%.2f", stepsTaken, stepLength, heading * 180.0 / Math.PI, dx, dy)
-                    sendBroadcast(Intent("com.example.inertialgps.PDR_LOG").apply {
-                        setPackage(packageName)
-                        putExtra("log", logMsg)
-                    })
-                    
-                }
+                // ==========================================
+                // HYBRID SINS + PDR STATE MACHINE
+                // ==========================================
                 
-                // ZUPT logic
+                // STATE 1: ZUPT (Stationary)
                 val ax = event.values[0]
                 val ay = event.values[1]                                          
                 val az = event.values[2]
@@ -311,14 +273,63 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         if (accelWindow[i] < minMag) minMag = accelWindow[i]
                         if (accelWindow[i] > maxMag) maxMag = accelWindow[i]
                     }
-                    
                     val signalSpread = maxMag - minMag
-                    
                     if (signalSpread < 0.15f) { 
                         eskf.updateZUPT(0.01)
                         isZuptActive = true
                     }
                 }
+
+                // STATE 2: PDR (Walking)
+                if (isStep) {
+                    stepsTaken++
+                    timeSinceLastStep = currentTime
+                    
+                    val currentVx = eskf.velocity.get(0, 0)
+                    val currentVy = eskf.velocity.get(1, 0)
+                    
+                    val heading = if (kotlin.math.abs(currentVx) > 0.1 || kotlin.math.abs(currentVy) > 0.1) {
+                        kotlin.math.atan2(currentVy, currentVx)
+                    } else {
+                        kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
+                    }
+
+                    // Feed average step velocity into ESKF
+                    val stepVel = stepDetector.stepVelocity
+                    val vx_pdr = stepVel * kotlin.math.cos(heading)
+                    val vy_pdr = stepVel * kotlin.math.sin(heading)
+                    
+                    eskf.updateVelocity(doubleArrayOf(vx_pdr, vy_pdr, 0.0), 0.1)
+                    
+                    val logMsg = String.format("Step %d: Vel=%.2fm/s, H=%.1f°", stepsTaken, stepVel, heading * 180.0 / Math.PI)
+                    sendBroadcast(Intent("com.example.inertialgps.PDR_LOG").apply {
+                        setPackage(packageName)
+                        putExtra("log", logMsg)
+                    })
+                }
+
+                // STATE 3: NHC (Transport Mode)
+                if (!isZuptActive && (currentTime - timeSinceLastStep > 5000)) {
+                    val gyroMag = kotlin.math.sqrt(currentGyro[0]*currentGyro[0] + currentGyro[1]*currentGyro[1] + currentGyro[2]*currentGyro[2])
+                    
+                    // Rotation Watchdog: Only apply NHC if phone is not spinning in hands
+                    if (gyroMag < 0.2f) { 
+                        val currentVx = eskf.velocity.get(0, 0)
+                        val currentVy = eskf.velocity.get(1, 0)
+                        
+                        // Need sufficient speed to determine true forward axis
+                        if (kotlin.math.abs(currentVx) > 0.5 || kotlin.math.abs(currentVy) > 0.5) {
+                            val heading = kotlin.math.atan2(currentVy, currentVx)
+                            // Soft NHC alignment
+                            eskf.updateLateralVelocity(heading, 1.0)
+                        }
+                    }
+                }
+                
+                // STATE 4: Pure INS 
+                // Happens automatically 200 times a second via eskf.predict() when no updates are applied.
+                
+                // ==========================================
                 
                 // Throttle UI and Mock Location updates to prevent Broadcast flooding (1 Hz or on Step)
                 if (currentTime - lastMockUpdateTime > 1000 || isStep) {

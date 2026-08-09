@@ -81,8 +81,8 @@ class ESKF {
         P = I.minus(K.mult(H)).mult(P)
     }
     
-    // Zero Velocity Update
-    fun updateZUPT(R_cov: Double) {
+    // General Velocity Update (for PDR and NHC)
+    fun updateVelocity(measuredVel: DoubleArray, R_cov: Double) {
         val H = SimpleMatrix(3, 9)
         H.set(0, 3, 1.0); H.set(1, 4, 1.0); H.set(2, 5, 1.0)
         
@@ -91,13 +91,45 @@ class ESKF {
         val S = H.mult(P).mult(H.transpose()).plus(R_mat)
         val K = P.mult(H.transpose()).mult(S.invert())
         
-        val z = SimpleMatrix(3, 1).minus(velocity) // 0 - nominal velocity
+        val z = SimpleMatrix(3, 1).apply {
+            set(0, 0, measuredVel[0])
+            set(1, 0, measuredVel[1])
+            set(2, 0, measuredVel[2])
+        }.minus(velocity)
         
         val dx = K.mult(z)
         injectErrorState(dx)
         
         val I = SimpleMatrix.identity(9)
         P = I.minus(K.mult(H)).mult(P)
+    }
+    
+    // Lateral Velocity Update (NHC)
+    fun updateLateralVelocity(heading: Double, R_cov: Double) {
+        val H = SimpleMatrix(1, 9)
+        val sinH = sin(heading)
+        val cosH = cos(heading)
+        H.set(0, 3, -sinH)
+        H.set(0, 4, cosH)
+        
+        val R_mat = SimpleMatrix(1, 1).apply { set(0, 0, R_cov) }
+        
+        val S = H.mult(P).mult(H.transpose()).plus(R_mat)
+        val K = P.mult(H.transpose()).mult(S.invert())
+        
+        val currentLatVel = -sinH * velocity.get(0, 0) + cosH * velocity.get(1, 0)
+        val z = SimpleMatrix(1, 1).apply { set(0, 0, 0.0 - currentLatVel) }
+        
+        val dx = K.mult(z)
+        injectErrorState(dx)
+        
+        val I = SimpleMatrix.identity(9)
+        P = I.minus(K.mult(H)).mult(P)
+    }
+
+    // Zero Velocity Update
+    fun updateZUPT(R_cov: Double) {
+        updateVelocity(doubleArrayOf(0.0, 0.0, 0.0), R_cov)
     }
 
     private fun injectErrorState(dx: SimpleMatrix) {

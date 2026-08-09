@@ -8,8 +8,9 @@ class StepDetector {
     private val MIN_STEP_DELAY_MS = 350L
     private val MAX_STEP_DELAY_MS = 2000L
     private val GYRO_VARIANCE_THRESHOLD = 15.0f
-    
-    private val WEINBERG_K = 0.45f // Tunable constant for step length
+    // Kinematic Step Model: L = a * Freq + b
+    var stepK_a = 0.3f // Can be calibrated by GPS
+    var stepK_b = 0.2f // Can be calibrated by GPS
     
     // Dynamic Thresholds
     private var dynamicPeakThreshold = 1.0f
@@ -38,6 +39,8 @@ class StepDetector {
 
     // PDR Output
     var stepLength = 0f
+        private set
+    var stepVelocity = 0f
         private set
 
     fun process(aWorld: DoubleArray, gx: Float, gy: Float, gz: Float, vx: Float, vy: Float, timestampMs: Long): Boolean {
@@ -91,9 +94,13 @@ class StepDetector {
                     // 2. Gyro variance check (reject wild swinging)
                     // 3. True Physical Velocity check (ESKF must see actual movement > 0.15 m/s)
                     if (timestampMs - lastValidStepTime > 250L && gyroVar < GYRO_VARIANCE_THRESHOLD && velMag > 0.15f) {
-                        stepLength = WEINBERG_K * sqrt(sqrt(lastPeakValue - currentValleyValue))
-                        if (stepLength < 0.4f) stepLength = 0.4f
+                        val freq = 1000.0f / dt.toFloat()
+                        stepLength = stepK_a * freq + stepK_b
+                        
+                        if (stepLength < 0.3f) stepLength = 0.3f
                         if (stepLength > 1.2f) stepLength = 1.2f
+                        
+                        stepVelocity = stepLength / (dt.toFloat() / 1000.0f)
                         
                         stepDetected = true
                         lastValidStepTime = timestampMs
