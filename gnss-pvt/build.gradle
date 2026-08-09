@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace 'com.google.android.apps.location.gps.gnsslogger.pseudorange'
+    namespace 'com.google.location.lbs.gnss.gps.pseudorange'
     compileSdk 34
 
     defaultConfig {
