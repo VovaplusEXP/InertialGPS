@@ -3,7 +3,8 @@ plugins {
 }
 
 android {
-    compileSdk 32
+    namespace 'com.google.android.apps.location.gps.gnsslogger.pseudorange'
+    compileSdk 34
 
     defaultConfig {
         minSdk 24
