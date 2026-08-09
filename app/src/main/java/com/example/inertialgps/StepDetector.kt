@@ -8,9 +8,20 @@ class StepDetector {
     private val MIN_STEP_DELAY_MS = 350L
     private val MAX_STEP_DELAY_MS = 2000L
     private val GYRO_VARIANCE_THRESHOLD = 15.0f
-    // Kinematic Step Model: L = a * Freq + b
-    var stepK_a = 0.3f // Can be calibrated by GPS
-    var stepK_b = 0.2f // Can be calibrated by GPS
+    // Kinematic Step Model: L = K * (0.3 * Freq + 0.2)
+    var stepK_multiplier = 1.0f // Calibrated via GNSS
+    
+    // Cadence tracking for Strict Gating
+    private val freqHistory = FloatArray(10)
+    private var freqIndex = 0
+    private var freqCount = 0
+    
+    val isCadenceStable: Boolean
+        get() {
+            if (freqCount < 10) return false
+            val variance = calculateVariance(freqHistory, freqCount)
+            return variance < 0.05f // Very stable rhythm
+        }
     
     // Dynamic Thresholds
     private var dynamicPeakThreshold = 1.0f
@@ -95,7 +106,13 @@ class StepDetector {
                     // 3. True Physical Velocity check (ESKF must see actual movement > 0.15 m/s)
                     if (timestampMs - lastValidStepTime > 250L && gyroVar < GYRO_VARIANCE_THRESHOLD && velMag > 0.15f) {
                         val freq = 1000.0f / dt.toFloat()
-                        stepLength = stepK_a * freq + stepK_b
+                        
+                        freqHistory[freqIndex] = freq
+                        freqIndex = (freqIndex + 1) % freqHistory.size
+                        if (freqCount < freqHistory.size) freqCount++
+                        
+                        val baseLength = 0.3f * freq + 0.2f
+                        stepLength = baseLength * stepK_multiplier
                         
                         if (stepLength < 0.3f) stepLength = 0.3f
                         if (stepLength > 1.2f) stepLength = 1.2f

@@ -23,6 +23,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.example.inertialgps.gnss.AndroidGnssAdapter
 import kotlin.math.cos
 import kotlin.math.PI
 
@@ -53,6 +54,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     
     private val stepDetector = StepDetector()
     private val CHANNEL_ID = "MockLocationServiceChannel"
+    private lateinit var gnssAdapter: AndroidGnssAdapter
 
     override fun onCreate() {
         super.onCreate()
@@ -60,6 +62,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("isServiceRunning", true).apply()
+        
+        gnssAdapter = AndroidGnssAdapter(this)
         
         linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -106,6 +110,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         isInertialMode = true
         prefs.edit().putBoolean("isInertialEnabled", true).apply()
         gotInitialLocation = false
+        gnssAdapter.start()
 
         try {
             sendBroadcast(Intent("com.example.inertialgps.GPS_WAITING"))
@@ -132,6 +137,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         if (!isInertialMode) return
         isInertialMode = false
         prefs.edit().putBoolean("isInertialEnabled", false).apply()
+        
+        gnssAdapter.stop()
         
         // Disable sensors when not walking to save battery
         sensorManager.unregisterListener(this, rawAccelSensor)
@@ -208,6 +215,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var windowIndex = 0
     private var isWindowFull = false
     private var isZuptActive = false
+    
+    // NHC Gyro-Aided Freeze variables
+    private var savedBodyAxisX = 0.0
+    private var savedBodyAxisY = 1.0
+    private var hasSavedBodyAxis = false
     
     private val eskf = ESKF()
     private var isEskfInitialized = false
@@ -293,6 +305,23 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     } else {
                         kotlin.math.atan2(rotationMatrix[4].toDouble(), rotationMatrix[1].toDouble())
                     }
+                    
+                    // Strict Gating PDR Auto-calibration
+                    val gnssVel = gnssAdapter.getVelocity()
+                    if (gnssVel != null && gnssVel.covariance < 0.5 && stepDetector.isCadenceStable) {
+                        val gnssMag = kotlin.math.sqrt(gnssVel.vx * gnssVel.vx + gnssVel.vy * gnssVel.vy)
+                        if (gnssMag > 0.5) {
+                            val gnssHeading = kotlin.math.atan2(gnssVel.vy, gnssVel.vx)
+                            // Check heading consistency
+                            val headingDiff = kotlin.math.abs(gnssHeading - heading)
+                            if (headingDiff < 0.3 || headingDiff > 2 * Math.PI - 0.3) {
+                                // Update K using EMA (alpha = 0.05)
+                                val baseModelLength = stepDetector.stepLength / stepDetector.stepK_multiplier
+                                val observedK = (gnssMag * (dt.toFloat() / 1000f)) / baseModelLength
+                                stepDetector.stepK_multiplier = stepDetector.stepK_multiplier * 0.95f + observedK * 0.05f
+                            }
+                        }
+                    }
 
                     // Feed average step velocity into ESKF
                     val stepVel = stepDetector.stepVelocity
@@ -301,7 +330,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     
                     eskf.updateVelocity(doubleArrayOf(vx_pdr, vy_pdr, 0.0), 0.1)
                     
-                    val logMsg = String.format("Step %d: Vel=%.2fm/s, H=%.1f°", stepsTaken, stepVel, heading * 180.0 / Math.PI)
+                    val logMsg = String.format("Step %d: Vel=%.2fm/s, H=%.1f°, K=%.2f", stepsTaken, stepVel, heading * 180.0 / Math.PI, stepDetector.stepK_multiplier)
                     sendBroadcast(Intent("com.example.inertialgps.PDR_LOG").apply {
                         setPackage(packageName)
                         putExtra("log", logMsg)
@@ -313,16 +342,49 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     val gyroMag = kotlin.math.sqrt(currentGyro[0]*currentGyro[0] + currentGyro[1]*currentGyro[1] + currentGyro[2]*currentGyro[2])
                     
                     // Rotation Watchdog: Only apply NHC if phone is not spinning in hands
-                    if (gyroMag < 0.2f) { 
+                    if (gyroMag < 0.3f) { 
                         val currentVx = eskf.velocity.get(0, 0)
                         val currentVy = eskf.velocity.get(1, 0)
                         
-                        // Need sufficient speed to determine true forward axis
-                        if (kotlin.math.abs(currentVx) > 0.5 || kotlin.math.abs(currentVy) > 0.5) {
-                            val heading = kotlin.math.atan2(currentVy, currentVx)
-                            // Soft NHC alignment
-                            eskf.updateLateralVelocity(heading, 1.0)
+                        val gnssVel = gnssAdapter.getVelocity()
+                        val (vX, vY, vMag) = if (gnssVel != null && gnssVel.covariance < 0.5) {
+                            val mag = kotlin.math.sqrt(gnssVel.vx * gnssVel.vx + gnssVel.vy * gnssVel.vy)
+                            Triple(gnssVel.vx, gnssVel.vy, mag)
+                        } else {
+                            val mag = kotlin.math.sqrt(currentVx * currentVx + currentVy * currentVy)
+                            Triple(currentVx, currentVy, mag)
                         }
+                        
+                        var nhcHeading = 0.0
+                        var applyNhc = false
+
+                        if (vMag > 2.0) {
+                            nhcHeading = kotlin.math.atan2(vY, vX)
+                            
+                            val wX = kotlin.math.cos(nhcHeading).toFloat()
+                            val wY = kotlin.math.sin(nhcHeading).toFloat()
+                            
+                            savedBodyAxisX = (rotationMatrix[0]*wX + rotationMatrix[3]*wY + rotationMatrix[6]*0f).toDouble()
+                            savedBodyAxisY = (rotationMatrix[1]*wX + rotationMatrix[4]*wY + rotationMatrix[7]*0f).toDouble()
+                            hasSavedBodyAxis = true
+                            applyNhc = true
+                        } else if (hasSavedBodyAxis) {
+                            val bX = savedBodyAxisX.toFloat()
+                            val bY = savedBodyAxisY.toFloat()
+                            
+                            val wX = rotationMatrix[0]*bX + rotationMatrix[1]*bY
+                            val wY = rotationMatrix[3]*bX + rotationMatrix[4]*bY
+                            
+                            nhcHeading = kotlin.math.atan2(wY.toDouble(), wX.toDouble())
+                            applyNhc = true
+                        }
+                        
+                        if (applyNhc) {
+                            val rCov = if (vMag > 2.0) 0.1 else 1.0 // Soft NHC on low speeds
+                            eskf.updateLateralVelocity(nhcHeading, rCov)
+                        }
+                    } else {
+                        hasSavedBodyAxis = false // Reset freeze if phone turned heavily
                     }
                 }
                 
