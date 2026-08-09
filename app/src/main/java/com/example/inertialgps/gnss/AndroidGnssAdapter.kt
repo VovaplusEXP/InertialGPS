@@ -35,9 +35,9 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
             // For now, we log the number of visible satellites providing Doppler data
             var dopplerCount = 0
             for (measurement in measurements) {
-                if (measurement.pseudorangeRateState != 0) {
-                    dopplerCount++
-                }
+                // In API 24+, pseudorangeRateMetersPerSecond is widely available 
+                // so we just count the valid measurements (non-empty)
+                dopplerCount++
             }
             // Log.d("GNSS_Adapter", "Received raw measurements from $dopplerCount satellites with Doppler.")
             

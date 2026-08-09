@@ -318,7 +318,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                                 // Update K using EMA (alpha = 0.05)
                                 val baseModelLength = stepDetector.stepLength / stepDetector.stepK_multiplier
                                 val observedK = (gnssMag * (dt.toFloat() / 1000f)) / baseModelLength
-                                stepDetector.stepK_multiplier = stepDetector.stepK_multiplier * 0.95f + observedK * 0.05f
+                                stepDetector.stepK_multiplier = stepDetector.stepK_multiplier * 0.95f + observedK.toFloat() * 0.05f
                             }
                         }
                     }
