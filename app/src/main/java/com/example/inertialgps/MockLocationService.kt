@@ -222,6 +222,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private var hasSavedBodyAxis = false
     private var currentNhcHeading = 0.0
     
+    // Step Gating
+    private var consecutiveSteps = 0
+    private val stepVelocityBuffer = mutableListOf<DoubleArray>()
+    
     private val eskf = ESKF()
     private var isEskfInitialized = false
 
@@ -290,6 +294,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     if (signalSpread < 0.15f) { 
                         eskf.updateZUPT(0.01)
                         isZuptActive = true
+                        consecutiveSteps = 0
+                        stepVelocityBuffer.clear()
                     }
                 }
 
@@ -329,9 +335,26 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     val vx_pdr = stepVel * kotlin.math.cos(heading)
                     val vy_pdr = stepVel * kotlin.math.sin(heading)
                     
-                    eskf.updateVelocity(doubleArrayOf(vx_pdr, vy_pdr, 0.0), 0.1)
+                    consecutiveSteps++
+                    val stepVelArray = doubleArrayOf(vx_pdr, vy_pdr, 0.0)
                     
-                    val logMsg = String.format("Step %d: Vel=%.2fm/s, H=%.1f°, K=%.2f", stepsTaken, stepVel, heading * 180.0 / Math.PI, stepDetector.stepK_multiplier)
+                    if (consecutiveSteps < 3) {
+                        // Buffer the step, do not feed to ESKF to prevent false positives from hand waving
+                        stepVelocityBuffer.add(stepVelArray)
+                    } else if (consecutiveSteps == 3) {
+                        // Confirmed walking! Flush the buffer first to catch up
+                        for (bufferedStep in stepVelocityBuffer) {
+                            eskf.updateVelocity(bufferedStep, 0.1)
+                        }
+                        stepVelocityBuffer.clear()
+                        eskf.updateVelocity(stepVelArray, 0.1)
+                    } else {
+                        // Already walking, feed directly
+                        eskf.updateVelocity(stepVelArray, 0.1)
+                    }
+                    
+                    val logMsg = String.format("Step %d (Seq: %d): Vel=%.2fm/s, H=%.1f°, K=%.2f", 
+                        stepsTaken, consecutiveSteps, stepVel, heading * 180.0 / Math.PI, stepDetector.stepK_multiplier)
                     sendBroadcast(Intent("com.example.inertialgps.PDR_LOG").apply {
                         setPackage(packageName)
                         putExtra("log", logMsg)
