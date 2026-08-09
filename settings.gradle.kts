@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "InertialGPS"
-include(":app")
+include(":app", ":gnss-pvt")
