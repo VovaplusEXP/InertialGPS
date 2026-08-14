@@ -11,6 +11,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.ActivityCompat
 import com.google.location.lbs.gnss.gps.pseudorange.PseudorangePositionVelocityFromRealTimeEvents
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /**
@@ -20,28 +21,29 @@ import java.util.concurrent.Executors
 class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
 
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    private val executor = Executors.newSingleThreadExecutor()
+    private var executor: ExecutorService? = null
     
     // Instantiate the imported Google WLS Solver
     private val pvtSolver = PseudorangePositionVelocityFromRealTimeEvents()
     
     // The currently computed velocity from the PVT Solver
-    private var currentVelocity: GnssVelocity? = null
+    @Volatile private var currentVelocity: GnssVelocity? = null
+    @Volatile private var onVelocityListener: ((GnssVelocity) -> Unit)? = null
+    @Volatile private var referenceSet = false
 
     private val gnssCallback = object : GnssMeasurementsEvent.Callback() {
         override fun onGnssMeasurementsReceived(event: GnssMeasurementsEvent) {
-            val measurements = event.measurements
             try {
-                // Ensure the solver has a reference location to initialize properly (or else it aborts)
-                val lastLoc = locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-                if (lastLoc != null) {
-                    pvtSolver.setReferencePosition(
-                        (lastLoc.latitude * 1e7).toInt(), 
-                        (lastLoc.longitude * 1e7).toInt(), 
-                        (lastLoc.altitude * 1e7).toInt()
-                    )
-                } else {
-                    pvtSolver.setReferencePosition(0, 0, 0)
+                if (!referenceSet) {
+                    val lastLoc = try {
+                        locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+                            ?: locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    } catch (e: SecurityException) {
+                        null
+                    }
+                    if (lastLoc != null) {
+                        setReferencePosition(lastLoc.latitude, lastLoc.longitude, lastLoc.altitude)
+                    }
                 }
 
                 // Feed raw measurements to the Google WLS solver
@@ -51,22 +53,22 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
                 val uncertEnu = pvtSolver.positionVelocityUncertaintyEnu
                 
                 // Check if solver successfully output valid numbers (not NaN)
-                if (velEnu != null && velEnu.size >= 3 && !velEnu[0].isNaN()) {
+                if (velEnu != null && velEnu.size >= 3 && !velEnu[0].isNaN() && !velEnu[1].isNaN() && !velEnu[2].isNaN()) {
                     // Extract Covariance/Uncertainty (using max horizontal uncertainty as a scalar)
                     var covariance = 100.0
                     if (uncertEnu != null && uncertEnu.size >= 6 && !uncertEnu[3].isNaN()) {
-                        // Indexes 3,4 are Vx, Vy uncertainties
                         covariance = kotlin.math.max(uncertEnu[3], uncertEnu[4])
                     }
                     
-                    currentVelocity = GnssVelocity(
+                    val velocity = GnssVelocity(
                         vx = velEnu[0],
                         vy = velEnu[1],
                         vz = velEnu[2],
                         covariance = covariance
                     )
+                    currentVelocity = velocity
+                    onVelocityListener?.invoke(velocity)
                 } else {
-                    // Solver didn't converge this epoch
                     currentVelocity = null
                 }
             } catch (e: Exception) {
@@ -91,6 +93,19 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
         }
     }
 
+    override fun setOnVelocityListener(listener: ((GnssVelocity) -> Unit)?) {
+        this.onVelocityListener = listener
+    }
+
+    override fun setReferencePosition(lat: Double, lon: Double, alt: Double) {
+        referenceSet = true
+        pvtSolver.setReferencePosition(
+            (lat * 1e7).toInt(),
+            (lon * 1e7).toInt(),
+            (alt * 1e7).toInt()
+        )
+    }
+
     override fun getVelocity(): GnssVelocity? {
         return currentVelocity
     }
@@ -101,18 +116,22 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
             return
         }
 
+        if (executor == null || executor!!.isShutdown) {
+            executor = Executors.newSingleThreadExecutor()
+        }
+        val currentExec = executor!!
+
         try {
             // Register Navigation Messages
-            locationManager.registerGnssNavigationMessageCallback(executor, navCallback)
+            locationManager.registerGnssNavigationMessageCallback(currentExec, navCallback)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // API 31+: Force Full Tracking to bypass Duty Cycling
                 val request = GnssMeasurementRequest.Builder()
                     .setFullTracking(true)
                     .build()
-                locationManager.registerGnssMeasurementsCallback(request, executor, gnssCallback)
+                locationManager.registerGnssMeasurementsCallback(request, currentExec, gnssCallback)
             } else {
-                // API < 31: Legacy registration (may suffer from duty cycling if not disabled in dev options)
                 locationManager.registerGnssMeasurementsCallback(gnssCallback)
             }
             Log.d("GNSS_Adapter", "Successfully registered for raw GNSS measurements.")
@@ -122,8 +141,15 @@ class AndroidGnssAdapter(private val context: Context) : GnssVelocityProvider {
     }
 
     override fun stop() {
-        locationManager.unregisterGnssNavigationMessageCallback(navCallback)
-        locationManager.unregisterGnssMeasurementsCallback(gnssCallback)
+        try {
+            locationManager.unregisterGnssNavigationMessageCallback(navCallback)
+            locationManager.unregisterGnssMeasurementsCallback(gnssCallback)
+        } catch (e: Exception) {
+            Log.e("GNSS_Adapter", "Error unregistering GNSS callbacks", e)
+        }
+        executor?.shutdown()
+        executor = null
+        currentVelocity = null
         Log.d("GNSS_Adapter", "Unregistered GNSS measurements.")
     }
 }

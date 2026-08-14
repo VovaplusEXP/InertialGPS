@@ -41,7 +41,6 @@ class StepDetector {
     
     // High-Pass Filter state for Z-axis
     private var azDC = 0f
-    private var azPrev = 0f
     
     // 200 samples = ~1 sec at 200Hz
     private val zBuffer = FloatArray(200)
@@ -60,9 +59,6 @@ class StepDetector {
         // High-pass filter (DC removal) to eliminate false steps caused by rotating the phone's hardware bias
         azDC = azDC + 0.005f * (azRaw - azDC)
         val az = azRaw - azDC
-        val ax = aWorld[0].toFloat()
-        val ay = aWorld[1].toFloat()
-        val horizontalMag = sqrt(ax * ax + ay * ay)
         
         // Track Gyroscope
         val gyroMag = sqrt(gx * gx + gy * gy + gz * gz)

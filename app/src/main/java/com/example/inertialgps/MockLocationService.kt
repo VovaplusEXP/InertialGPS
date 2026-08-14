@@ -17,8 +17,9 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
-import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -33,28 +34,39 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     private lateinit var sensorManager: SensorManager
     private lateinit var prefs: SharedPreferences
 
-    private var linearAccelerationSensor: Sensor? = null
     private var rawAccelSensor: Sensor? = null
     private var gyroSensor: Sensor? = null
     private var rotationVectorSensor: Sensor? = null
+    private var pressureSensor: Sensor? = null
+    private var isBarometerAvailable = false
+    private var initialPressure = 0.0f
+    private var currentPressure = 0.0f
+    private var filteredBaroAlt = 0.0
+
+    private var sensorThread: HandlerThread? = null
+    private var sensorHandler: Handler? = null
 
     private var initialLat = 0.0
     private var initialLon = 0.0
-    private var gotInitialLocation = false
+    private var initialAlt = 0.0
+    @Volatile private var gotInitialLocation = false
 
     private var lastTime: Long = 0
     private var velocity = FloatArray(3) // x, y, z in Earth frame
     private var positionOffset = FloatArray(3) // x, y, z in Earth frame
+    private val currentLla = DoubleArray(3) // lat, lon, alt result buffer
 
     private val rotationMatrix = FloatArray(9)
     private var hasRotation = false
-    private var isInertialMode = false
-    
-    // Calibration obsolete: dynamic ESKF ZUPT used
+    @Volatile private var isInertialMode = false
     
     private val stepDetector = StepDetector()
     private val CHANNEL_ID = "MockLocationServiceChannel"
     private lateinit var gnssAdapter: AndroidGnssAdapter
+
+    // GNSS Doppler Fusion tracking
+    private var gnssFusionCount = 0
+    private var lastGnssFusionTime = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -64,45 +76,139 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         prefs.edit().putBoolean("isServiceRunning", true).apply()
         
         gnssAdapter = AndroidGnssAdapter(this)
+        gnssAdapter.setOnVelocityListener { gnssVel ->
+            sensorHandler?.post {
+                if (!isInertialMode || !isEskfInitialized || !gotInitialLocation) return@post
+                
+                // Loosely-Coupled SINS/GNSS Integration:
+                // Gate incoming velocity: reject high covariance / noise (> 2.5 m/s) and NaNs
+                if (gnssVel.covariance < 2.5 && !gnssVel.vx.isNaN() && !gnssVel.vy.isNaN() && !gnssVel.vz.isNaN()) {
+                    // Measurement noise covariance R: square of 1-sigma uncertainty, minimum 0.04 (m/s)^2
+                    val rCov = kotlin.math.max(gnssVel.covariance * gnssVel.covariance, 0.04)
+                    val velArray = doubleArrayOf(gnssVel.vx, gnssVel.vy, gnssVel.vz)
+                    
+                    eskf.updateVelocity(velArray, rCov)
+                    gnssFusionCount++
+                    lastGnssFusionTime = System.currentTimeMillis()
+                }
+            }
+        }
+
+        val thread = HandlerThread("InertialSensorThread", Process.THREAD_PRIORITY_MORE_FAVORABLE)
+        thread.start()
+        sensorThread = thread
+        sensorHandler = Handler(thread.looper)
         
-        linearAccelerationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        rawAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER_UNCALIBRATED) 
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) 
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         
         // Use Game Rotation Vector (immune to indoor magnetic tilt interference)
         rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
-        if (rotationVectorSensor == null) {
-            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        }
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+
+        // Barometer (Optional on non-flagships)
+        pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+        isBarometerAvailable = (pressureSensor != null)
 
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Inertial GPS")
-            .setContentText("Service running...")
-            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
-            .setOngoing(true)
-            .build()
-        startForeground(1, notification)
+        if (intent == null) {
+            val wasRunning = prefs.getBoolean("isServiceRunning", false)
+            val wasInertial = prefs.getBoolean("isInertialEnabled", false)
+            if (wasRunning) {
+                registerSensors()
+                if (wasInertial) {
+                    enableInertialMode()
+                }
+                updateNotification()
+                return START_STICKY
+            }
+        }
+
+        if (intent?.action == "STOP_SERVICE") {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        updateNotification()
 
         when (intent?.action) {
             "START_SERVICE" -> {
                 isInertialMode = false
-                sensorManager.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_FASTEST)
-                sensorManager.registerListener(this, rawAccelSensor, SensorManager.SENSOR_DELAY_FASTEST)
-                sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST)
-                sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_FASTEST)
+                registerSensors()
+                updateNotification()
             }
             "ENABLE_INERTIAL" -> {
                 enableInertialMode()
+                updateNotification()
             }
             "DISABLE_INERTIAL" -> {
                 disableInertialMode()
+                updateNotification()
             }
         }
         return START_STICKY
+    }
+
+    private fun updateNotification() {
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openAppPendingIntent = android.app.PendingIntent.getActivity(
+            this,
+            0,
+            openAppIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
+        )
+
+        val stopIntent = Intent(this, MockLocationService::class.java).apply {
+            action = "STOP_SERVICE"
+        }
+        val stopPendingIntent = android.app.PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+            }
+        )
+
+        val contentText = if (isInertialMode) "Inertial Fusion Mode Active" else "Mock GPS Provider Active"
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Inertial GPS")
+            .setContentText(contentText)
+            .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+            .setContentIntent(openAppPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Service", stopPendingIntent)
+            .setOngoing(true)
+            .build()
+
+        startForeground(1, notification)
+    }
+
+    private fun registerSensors() {
+        val handler = sensorHandler
+        sensorManager.registerListener(this, rawAccelSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+        sensorManager.registerListener(this, gyroSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+        sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_FASTEST, handler)
+        if (pressureSensor != null) {
+            sensorManager.registerListener(this, pressureSensor, SensorManager.SENSOR_DELAY_NORMAL, handler)
+        }
+    }
+
+    private fun unregisterSensors() {
+        sensorManager.unregisterListener(this)
     }
 
     private fun enableInertialMode() {
@@ -110,7 +216,10 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         isInertialMode = true
         prefs.edit().putBoolean("isInertialEnabled", true).apply()
         gotInitialLocation = false
+        gnssFusionCount = 0
+        lastGnssFusionTime = 0L
         gnssAdapter.start()
+        registerSensors()
 
         try {
             sendBroadcast(Intent("com.example.inertialgps.GPS_WAITING"))
@@ -139,10 +248,7 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
         prefs.edit().putBoolean("isInertialEnabled", false).apply()
         
         gnssAdapter.stop()
-        
-        // Disable sensors when not walking to save battery
-        sensorManager.unregisterListener(this, rawAccelSensor)
-        sensorManager.unregisterListener(this, linearAccelerationSensor)
+        unregisterSensors()
         
         // Force cleanup of all possible providers (in case they were orphaned by previous app builds)
         val allPossibleProviders = arrayOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused")
@@ -156,17 +262,29 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     }
 
     private fun setInitialLocation(location: Location) {
+        sensorHandler?.post {
+            setInitialLocationInternal(location)
+        } ?: setInitialLocationInternal(location)
+    }
+
+    private fun setInitialLocationInternal(location: Location) {
         if (gotInitialLocation || !isInertialMode) return
         
         initialLat = location.latitude
         initialLon = location.longitude
+        initialAlt = location.altitude
         
+        initialPressure = if (currentPressure > 0f) currentPressure else 0f
+        filteredBaroAlt = 0.0
+
         velocity.fill(0f)
         positionOffset.fill(0f)
         
+        // Feed reference position to GNSS adapter solver
+        gnssAdapter.setReferencePosition(location.latitude, location.longitude, location.altitude)
+
         // Hard Reset ESKF
-        eskf.position.fill(0.0)
-        eskf.velocity.fill(0.0)
+        eskf.reset()
         isEskfInitialized = false
         
         gotInitialLocation = true
@@ -245,6 +363,21 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             currentGyro[0] = event.values[0]
             currentGyro[1] = event.values[1]
             currentGyro[2] = event.values[2]
+        } else if (type == Sensor.TYPE_PRESSURE) {
+            currentPressure = event.values[0]
+            if (gotInitialLocation && isInertialMode && isEskfInitialized && currentPressure > 0f) {
+                if (initialPressure <= 0f) {
+                    initialPressure = currentPressure
+                }
+                if (initialPressure > 0f) {
+                    // Hypsometric relative altitude displacement (in meters)
+                    val rawDeltaH = 44330.0 * (1.0 - Math.pow((currentPressure / initialPressure).toDouble(), 0.190295))
+                    // Low-pass filter to reject indoor door-slam / AC pressure waves
+                    filteredBaroAlt = filteredBaroAlt * 0.9 + rawDeltaH * 0.1
+                    // Soft update into ESKF Z-position state
+                    eskf.updateAltitude(filteredBaroAlt, 1.0)
+                }
+            }
         } else if (type == Sensor.TYPE_ACCELEROMETER_UNCALIBRATED || type == Sensor.TYPE_ACCELEROMETER) {
             
             if (!gotInitialLocation || !isInertialMode || !isEskfInitialized) return
@@ -262,8 +395,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
             try {
                 eskf.predict(event.values, rotationMatrix, dt)
                 
-                val vx = eskf.velocity.get(0, 0)
-                val vy = eskf.velocity.get(1, 0)
+                val vx = eskf.velocity.x
+                val vy = eskf.velocity.y
                 
                 val isStep = stepDetector.process(eskf.linearAccelWorld, currentGyro[0], currentGyro[1], currentGyro[2], vx.toFloat(), vy.toFloat(), currentTime)
                 
@@ -302,10 +435,11 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                 // STATE 2: PDR (Walking)
                 if (isStep) {
                     stepsTaken++
+                    val currentStepIntervalMs = if (timeSinceLastStep > 0L) (currentTime - timeSinceLastStep) else 500L
                     timeSinceLastStep = currentTime
                     
-                    val currentVx = eskf.velocity.get(0, 0)
-                    val currentVy = eskf.velocity.get(1, 0)
+                    val currentVx = eskf.velocity.x
+                    val currentVy = eskf.velocity.y
                     
                     val heading = if (kotlin.math.abs(currentVx) > 0.1 || kotlin.math.abs(currentVy) > 0.1) {
                         kotlin.math.atan2(currentVy, currentVx)
@@ -322,10 +456,13 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                             // Check heading consistency
                             val headingDiff = kotlin.math.abs(gnssHeading - heading)
                             if (headingDiff < 0.3 || headingDiff > 2 * Math.PI - 0.3) {
-                                // Update K using EMA (alpha = 0.05)
+                                val dtStepSec = currentStepIntervalMs / 1000.0
+                                val observedStepLength = gnssMag * dtStepSec
                                 val baseModelLength = stepDetector.stepLength / stepDetector.stepK_multiplier
-                                val observedK = (gnssMag * (dt.toFloat() / 1000f)) / baseModelLength
-                                stepDetector.stepK_multiplier = stepDetector.stepK_multiplier * 0.95f + observedK.toFloat() * 0.05f
+                                if (baseModelLength > 0.05) {
+                                    val observedK = (observedStepLength / baseModelLength).toFloat()
+                                    stepDetector.stepK_multiplier = stepDetector.stepK_multiplier * 0.95f + observedK * 0.05f
+                                }
                             }
                         }
                     }
@@ -367,8 +504,8 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                     
                     // Rotation Watchdog: Only apply NHC if phone is not spinning in hands
                     if (gyroMag < 0.3f) { 
-                        val currentVx = eskf.velocity.get(0, 0)
-                        val currentVy = eskf.velocity.get(1, 0)
+                        val currentVx = eskf.velocity.x
+                        val currentVy = eskf.velocity.y
                         
                         val gnssVel = gnssAdapter.getVelocity()
                         val (vX, vY, vMag) = if (gnssVel != null && gnssVel.covariance < 0.5) {
@@ -425,27 +562,45 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         val b = eskf.accelBias
                         val zuptStr = if (isZuptActive) "ZUPT Active" else "Moving"
                         val sysLog = String.format("Pos: %.2f, %.2f, %.2f\nVel: %.2f, %.2f, %.2f\nBias: %.3f, %.3f, %.3f\nState: %s", 
-                            p.get(0,0), p.get(1,0), p.get(2,0),
-                            v.get(0,0), v.get(1,0), v.get(2,0),
-                            b.get(0,0), b.get(1,0), b.get(2,0),
+                            p.x, p.y, p.z,
+                            v.x, v.y, v.z,
+                            b.x, b.y, b.z,
                             zuptStr)
                         sendBroadcast(Intent("com.example.inertialgps.SYS_LOG").apply {
                             setPackage(packageName)
                             putExtra("log", sysLog)
                         })
                         
-                        // New detailed diagnostics
+                        // Detailed diagnostics
                         val vGnss = gnssAdapter.getVelocity()
+                        val timeSinceFusion = if (lastGnssFusionTime > 0L) (currentTime - lastGnssFusionTime) / 1000 else -1L
+                        val fusionStatus = if (timeSinceFusion in 0L..3L) {
+                            String.format("Active (%ds ago, count: %d)", timeSinceFusion, gnssFusionCount)
+                        } else {
+                            String.format("Inactive (%s)", if (timeSinceFusion >= 0) "${timeSinceFusion}s ago" else "never")
+                        }
+
+                        val hVar = kotlin.math.max(eskf.P[0] + eskf.P[10], 0.0)
+                        val filterAcc1Sigma = kotlin.math.sqrt(hVar)
+
                         val diagLog = StringBuilder()
                         diagLog.append("--- ENGINE DIAGNOSTICS ---\n")
                         diagLog.append(String.format("ZUPT State: %s\n", zuptStr))
+                        diagLog.append(String.format("GNSS Fusion: %s\n", fusionStatus))
                         diagLog.append(String.format("GNSS Velocity: %s\n", if (vGnss != null) String.format("%.2f, %.2f, %.2f (cov: %.2f)", vGnss.vx, vGnss.vy, vGnss.vz, vGnss.covariance) else "Unavailable"))
+                        diagLog.append(String.format("Filter Accuracy (1σ): %.2f m\n", filterAcc1Sigma))
+                        val baroStr = if (isBarometerAvailable) {
+                            String.format("%.1f hPa (ΔAlt: %.2fm)", currentPressure, filteredBaroAlt)
+                        } else {
+                            "Unavailable (No sensor)"
+                        }
+                        diagLog.append(String.format("Barometer: %s\n", baroStr))
                         diagLog.append(String.format("NHC Freeze Active: %s\n", hasSavedBodyAxis))
                         if (hasSavedBodyAxis) {
                             diagLog.append(String.format("NHC Body X: %.2f, Y: %.2f\n", savedBodyAxisX, savedBodyAxisY))
                             diagLog.append(String.format("NHC Heading (rad): %.2f\n", currentNhcHeading))
                         }
-                        diagLog.append(String.format("ESKF Velocity (Mag): %.2f m/s\n", kotlin.math.sqrt(v.get(0,0)*v.get(0,0) + v.get(1,0)*v.get(1,0))))
+                        diagLog.append(String.format("ESKF Velocity (Mag): %.2f m/s\n", kotlin.math.sqrt(v.x*v.x + v.y*v.y)))
                         
                         sendBroadcast(Intent("com.example.inertialgps.DIAG_LOG").apply {
                             setPackage(packageName)
@@ -455,39 +610,54 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
                         lastMockUpdateTime = currentTime
                     }
                     
-                    positionOffset[0] = eskf.position.get(0, 0).toFloat()
-                    positionOffset[1] = eskf.position.get(1, 0).toFloat()
+                    positionOffset[0] = eskf.position.x.toFloat()
+                    positionOffset[1] = eskf.position.y.toFloat()
+                    positionOffset[2] = eskf.position.z.toFloat()
+
+                    velocity[0] = eskf.velocity.x.toFloat()
+                    velocity[1] = eskf.velocity.y.toFloat()
+                    velocity[2] = eskf.velocity.z.toFloat()
                     
                     updateMockLocation()
                 }
                 
             } catch (e: Exception) {
-                // Catch matrix math errors and broadcast to UI
-                val errorIntent = Intent("com.example.inertialgps.MOCK_DENIED")
-                errorIntent.setPackage(packageName)
-                sendBroadcast(errorIntent)
+                Log.e("MockLocationService", "Sensor processing exception", e)
             }
         }
     }
 
     private fun updateMockLocation() {
-        val latOffset = positionOffset[1] / 111111.0
-        val newLat = initialLat + latOffset
-        val lonOffset = positionOffset[0] / (111111.0 * cos(initialLat * PI / 180.0))
-        val newLon = initialLon + lonOffset
+        // High-precision WGS-84 Geodetic ENU->ECEF->LLA transformation
+        Wgs84Converter.enuToLla(
+            refLatDeg = initialLat,
+            refLonDeg = initialLon,
+            refAltMeters = initialAlt,
+            eastMeters = positionOffset[0].toDouble(),
+            northMeters = positionOffset[1].toDouble(),
+            upMeters = positionOffset[2].toDouble(),
+            outLla = currentLla
+        )
+        val newLat = currentLla[0]
+        val newLon = currentLla[1]
+        val newAlt = currentLla[2]
 
         val currentSpeed = kotlin.math.sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1])
         val currentBearing = ((kotlin.math.atan2(velocity[0], velocity[1]) * 180 / PI + 360) % 360).toFloat()
 
+        // Calculate dynamic accuracy from ESKF covariance (P_xx + P_yy) with 1.5 multiplier (approx 85% confidence)
+        val hVar = kotlin.math.max(eskf.P[0] + eskf.P[10], 0.0)
+        val estimatedAccuracy = (kotlin.math.sqrt(hVar) * 1.5).toFloat().coerceIn(1.0f, 50.0f)
+
         val baseLocation = Location(LocationManager.GPS_PROVIDER).apply {
             latitude = newLat
             longitude = newLon
-            altitude = 0.0
+            altitude = newAlt
             speed = currentSpeed
             bearing = currentBearing
             time = System.currentTimeMillis()
             elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
-            accuracy = 5.0f
+            accuracy = estimatedAccuracy
         }
 
         val intent = Intent("com.example.inertialgps.LOCATION_UPDATE").apply {
@@ -520,8 +690,12 @@ class MockLocationService : Service(), SensorEventListener, LocationListener {
     override fun onDestroy() {
         super.onDestroy()
         prefs.edit().putBoolean("isServiceRunning", false).putBoolean("isInertialEnabled", false).apply()
-        sensorManager.unregisterListener(this)
+        unregisterSensors()
         disableInertialMode()
+        sensorThread?.quitSafely()
+        sensorThread = null
+        sensorHandler = null
+        sendBroadcast(Intent("com.example.inertialgps.SERVICE_STOPPED").apply { setPackage(packageName) })
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

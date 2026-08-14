@@ -38,6 +38,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("org.ejml:ejml-all:0.43.1")
     implementation(project(":gnss-pvt"))
+
+    testImplementation("junit:junit:4.13.2")
 }

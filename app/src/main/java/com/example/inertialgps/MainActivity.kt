@@ -6,38 +6,22 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.widget.Button
-import android.widget.TextView
-import android.widget.Toast
-import android.net.Uri
 import android.view.View
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.GravityCompat
-import androidx.drawerlayout.widget.DrawerLayout
-import com.google.android.material.appbar.MaterialToolbar
-import com.google.android.material.navigation.NavigationView
+import com.example.inertialgps.databinding.ActivityMainBinding
+import java.io.PrintWriter
+import java.io.StringWriter
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var drawerLayout: DrawerLayout
-    private lateinit var navView: NavigationView
-    private lateinit var layoutPanel: View
-    private lateinit var layoutLogs: View
-    private lateinit var topAppBar: MaterialToolbar
-
-    private lateinit var tvStatus: TextView
-    private lateinit var tvLocation: TextView
-    private lateinit var btnToggle: Button
-    private lateinit var btnToggleInertial: Button
-    private lateinit var btnShowMap: Button
-    
-    private lateinit var tvDiagnostics: TextView
-    private lateinit var tvSysLogs: TextView
-    private lateinit var tvLogs: TextView
+    private lateinit var binding: ActivityMainBinding
 
     private var isServiceRunning = false
     private var isInertialEnabled = false
@@ -50,28 +34,33 @@ class MainActivity : AppCompatActivity() {
                 "com.example.inertialgps.LOCATION_UPDATE" -> {
                     lastLat = intent.getDoubleExtra("lat", 0.0)
                     lastLon = intent.getDoubleExtra("lon", 0.0)
-                    tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lastLat, lastLon)
+                    binding.tvLocation.text = String.format("Lat: %.6f, Lon: %.6f", lastLat, lastLon)
                 }
                 "com.example.inertialgps.GPS_WAITING" -> {
-                    tvLocation.text = "Waiting for Real GPS fix..."
+                    binding.tvLocation.text = "Waiting for Real GPS fix..."
                 }
                 "com.example.inertialgps.MOCK_DENIED" -> {
                     Toast.makeText(this@MainActivity, "Mock Location not set in Developer Options!", Toast.LENGTH_LONG).show()
                     stopMockService()
                 }
+                "com.example.inertialgps.SERVICE_STOPPED" -> {
+                    isServiceRunning = false
+                    isInertialEnabled = false
+                    updateUIState()
+                }
                 "com.example.inertialgps.PDR_LOG" -> {
                     val log = intent.getStringExtra("log") ?: return
-                    val currentText = tvLogs.text.toString()
+                    val currentText = binding.tvLogs.text.toString()
                     val lines = currentText.split("\n").takeLast(10)
-                    tvLogs.text = lines.joinToString("\n") + "\n" + log
+                    binding.tvLogs.text = lines.joinToString("\n") + "\n" + log
                 }
                 "com.example.inertialgps.SYS_LOG" -> {
                     val log = intent.getStringExtra("log") ?: return
-                    tvSysLogs.text = "System Status:\n$log"
+                    binding.tvSysLogs.text = "System Status:\n$log"
                 }
                 "com.example.inertialgps.DIAG_LOG" -> {
                     val log = intent.getStringExtra("log") ?: return
-                    tvDiagnostics.text = log
+                    binding.tvDiagnostics.text = log
                 }
             }
         }
@@ -79,49 +68,36 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        drawerLayout = findViewById(R.id.drawerLayout)
-        navView = findViewById(R.id.navView)
-        layoutPanel = findViewById(R.id.layoutPanel)
-        layoutLogs = findViewById(R.id.layoutLogs)
-        topAppBar = findViewById(R.id.topAppBar)
-
-        topAppBar.setNavigationOnClickListener {
-            drawerLayout.openDrawer(GravityCompat.START)
+        binding.topAppBar.setNavigationOnClickListener {
+            binding.drawerLayout.openDrawer(GravityCompat.START)
         }
         
-        navView.setNavigationItemSelectedListener { menuItem ->
+        binding.navView.setNavigationItemSelectedListener { menuItem ->
             when (menuItem.itemId) {
                 R.id.nav_panel -> {
-                    layoutPanel.visibility = View.VISIBLE
-                    layoutLogs.visibility = View.GONE
-                    topAppBar.title = "Control Panel"
+                    binding.layoutPanel.visibility = View.VISIBLE
+                    binding.layoutLogs.visibility = View.GONE
+                    binding.topAppBar.title = "Control Panel"
                 }
                 R.id.nav_logs -> {
-                    layoutPanel.visibility = View.GONE
-                    layoutLogs.visibility = View.VISIBLE
-                    topAppBar.title = "Diagnostic Logs"
+                    binding.layoutPanel.visibility = View.GONE
+                    binding.layoutLogs.visibility = View.VISIBLE
+                    binding.topAppBar.title = "Diagnostic Logs"
                 }
             }
-            drawerLayout.closeDrawer(GravityCompat.START)
+            binding.drawerLayout.closeDrawer(GravityCompat.START)
             true
         }
 
-        tvStatus = findViewById(R.id.tvStatus)
-        tvLocation = findViewById(R.id.tvLocation)
-        btnToggle = findViewById(R.id.btnToggle)
-        btnToggleInertial = findViewById(R.id.btnToggleInertial)
-        btnShowMap = findViewById(R.id.btnShowMap)
-        tvDiagnostics = findViewById(R.id.tvDiagnostics)
-        tvSysLogs = findViewById(R.id.tvSysLogs)
-        tvLogs = findViewById(R.id.tvLogs)
-        
-        btnShowMap.setOnClickListener {
+        binding.btnShowMap.setOnClickListener {
             if (lastLat != 0.0 && lastLon != 0.0) {
                 val uri = Uri.parse("geo:$lastLat,$lastLon?q=$lastLat,$lastLon(InertialGPS Mock)")
-                val mapIntent = Intent(Intent.ACTION_VIEW, uri)
-                mapIntent.setPackage("com.google.android.apps.maps")
+                val mapIntent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    setPackage("com.google.android.apps.maps")
+                }
                 if (mapIntent.resolveActivity(packageManager) != null) {
                     startActivity(mapIntent)
                 } else {
@@ -137,22 +113,22 @@ class MainActivity : AppCompatActivity() {
         
         val crashLog = prefs.getString("crash_log", null)
         if (crashLog != null) {
-            tvStatus.text = "CRASH: $crashLog"
-            prefs.edit().remove("crash_log").commit()
+            binding.tvStatus.text = "CRASH: $crashLog"
+            prefs.edit().remove("crash_log").apply()
         }
 
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            val sw = java.io.StringWriter()
-            throwable.printStackTrace(java.io.PrintWriter(sw))
-            prefs.edit().putString("crash_log", sw.toString()).commit()
+            val sw = StringWriter()
+            throwable.printStackTrace(PrintWriter(sw))
+            prefs.edit().putString("crash_log", sw.toString()).apply()
             defaultHandler?.uncaughtException(thread, throwable)
         }
         isServiceRunning = prefs.getBoolean("isServiceRunning", false)
         isInertialEnabled = prefs.getBoolean("isInertialEnabled", false)
         updateUIState()
 
-        btnToggle.setOnClickListener {
+        binding.btnToggle.setOnClickListener {
             if (isServiceRunning) {
                 stopMockService()
             } else {
@@ -160,25 +136,52 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        btnToggleInertial.setOnClickListener {
+        binding.btnToggleInertial.setOnClickListener {
             isInertialEnabled = !isInertialEnabled
-            val intent = Intent(this, MockLocationService::class.java)
-            if (isInertialEnabled) {
-                intent.action = "ENABLE_INERTIAL"
-            } else {
-                intent.action = "DISABLE_INERTIAL"
+            val intent = Intent(this, MockLocationService::class.java).apply {
+                action = if (isInertialEnabled) "ENABLE_INERTIAL" else "DISABLE_INERTIAL"
             }
             startService(intent)
             updateUIState()
+        }
+
+        binding.btnShareLogs.setOnClickListener {
+            val diagText = binding.tvDiagnostics.text.toString()
+            val sysText = binding.tvSysLogs.text.toString()
+            val pdrText = binding.tvLogs.text.toString()
+            val fullReport = StringBuilder().apply {
+                append("=== InertialGPS Diagnostic Report ===\n\n")
+                append(diagText).append("\n\n")
+                append(sysText).append("\n\n")
+                append(pdrText)
+            }.toString()
+
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "InertialGPS Diagnostics")
+                putExtra(Intent.EXTRA_TEXT, fullReport)
+            }
+            startActivity(Intent.createChooser(shareIntent, "Share Diagnostic Logs"))
+        }
+
+        binding.btnClearLogs.setOnClickListener {
+            binding.tvLogs.text = "PDR Logs:\n"
+            Toast.makeText(this, "Logs cleared", Toast.LENGTH_SHORT).show()
         }
     }
 
     override fun onResume() {
         super.onResume()
+        val prefs = getSharedPreferences("InertialGPS", Context.MODE_PRIVATE)
+        isServiceRunning = prefs.getBoolean("isServiceRunning", false)
+        isInertialEnabled = prefs.getBoolean("isInertialEnabled", false)
+        updateUIState()
+
         val filter = IntentFilter().apply {
             addAction("com.example.inertialgps.LOCATION_UPDATE")
             addAction("com.example.inertialgps.GPS_WAITING")
             addAction("com.example.inertialgps.MOCK_DENIED")
+            addAction("com.example.inertialgps.SERVICE_STOPPED")
             addAction("com.example.inertialgps.PDR_LOG")
             addAction("com.example.inertialgps.SYS_LOG")
             addAction("com.example.inertialgps.DIAG_LOG")
@@ -220,26 +223,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUIState() {
         if (isServiceRunning) {
-            btnToggle.text = "Stop Service"
-            btnToggleInertial.isEnabled = true
+            binding.btnToggle.text = "Stop Service"
+            binding.btnToggleInertial.isEnabled = true
         } else {
-            btnToggle.text = "Start Service"
-            btnToggleInertial.isEnabled = false
+            binding.btnToggle.text = "Start Service"
+            binding.btnToggleInertial.isEnabled = false
             isInertialEnabled = false
         }
         
         if (isInertialEnabled) {
-            btnToggleInertial.text = "Disable Inertial Mode"
-            tvStatus.text = "Status: Service Running (Inertial ON)"
+            binding.btnToggleInertial.text = "Disable Inertial Mode"
+            binding.tvStatus.text = "Status: Service Running (Inertial ON)"
         } else {
-            btnToggleInertial.text = "Enable Inertial Mode"
-            tvStatus.text = if (isServiceRunning) "Status: Service Running" else "Status: Stopped"
+            binding.btnToggleInertial.text = "Enable Inertial Mode"
+            binding.tvStatus.text = if (isServiceRunning) "Status: Service Running" else "Status: Stopped"
         }
     }
 
     private fun startMockService() {
-        val intent = Intent(this, MockLocationService::class.java)
-        intent.action = "START_SERVICE"
+        val intent = Intent(this, MockLocationService::class.java).apply {
+            action = "START_SERVICE"
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -250,8 +254,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopMockService() {
-        val intent = Intent(this, MockLocationService::class.java)
-        stopService(intent)
+        val intent = Intent(this, MockLocationService::class.java).apply {
+            action = "STOP_SERVICE"
+        }
+        startService(intent)
         isServiceRunning = false
         isInertialEnabled = false
         updateUIState()
